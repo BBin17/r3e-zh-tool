@@ -1,0 +1,29 @@
+# 构建产物
+dist/
+build/
+release/
+out/
+__pycache__/
+*.spec
+
+# 游戏相关：英文原文和完整工作表不进公开仓库
+work/
+R3E-Localization-*.csv
+sample_zh.csv
+*.jca
+*.jca.*
+zh-patch-backups/
+zh-hud-backups/
+
+# 本地文件
+*.log
+.claude/
+
+# 私有签名材料和本机环境
+*.pem
+*.pfx
+*.p12
+.env
+.env.*
+.venv/
+Windows-SSH.local.md

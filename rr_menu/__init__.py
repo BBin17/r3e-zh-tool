@@ -1,0 +1,1 @@
+"""RaceRoom menu localization."""

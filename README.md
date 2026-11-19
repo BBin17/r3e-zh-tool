@@ -4,7 +4,7 @@ RaceRoom Racing Experience（R3E）的非官方中文界面汉化工具。
 
 **[下载 Windows 安装包](https://github.com/BBin17/r3e-zh-tool/releases/latest/download/R3E-ZH-Tool-Setup.exe)** · [查看更新说明](https://github.com/BBin17/r3e-zh-tool/releases/latest)
 
-Windows 版免费使用，支持软件内更新。使用和分发规则见[源码与授权](#源码与授权)。
+源码公开，Windows 版免费使用，赞助自愿。使用和分发规则见[源码与授权](#源码与授权)。
 
 开发者 [BBin17](https://github.com/BBin17) · QQ 交流群 **1128386065**
 
@@ -55,16 +55,17 @@ Windows 版免费使用，支持软件内更新。使用和分发规则见[源�
 
 ## 源码与授权
 
-**Windows 版免费使用。** R3E 汉化工具采用闭源开发。
+本仓库公开 R3E 汉化工具的程序源码。欢迎提交漏翻修正、菜单适配和测试反馈。原版和二次开发版本可免费分发，二次开发时请注明来源。详见[使用与二次开发条款](LICENSE.md)。
 
-- 可以分享 GitHub 发布页链接，也可以原样免费分发 Windows 安装包。
-- 不得将收费下载、付费入群、付费解锁或强制赞助作为获取软件或使用其功能的条件。赞助自愿。
+## 参与维护
 
-第三方组件和素材遵循各自的许可。
+- 漏翻或译文不自然，可以[提交翻译反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=translation.md)，附上页面位置和截图。
+- 出现汉化失败、启动异常或还原问题，可以[提交故障反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=bug.md)，附上版本和复现步骤。
+- 想跑源码、提交译文或帮忙复测，可以看[贡献指南](CONTRIBUTING.md)。
 
 ## 支持项目
 
-如果这个工具对你有帮助，欢迎[支持项目 ☕](docs/donate.md)。感谢你的支持！
+我在业余时间开发和维护这个工具。如果它帮到你，欢迎[自愿赞助 ☕](docs/donate.md)，支持后续的汉化、适配和测试。
 
 | 微信支付 | 支付宝 |
 | :---: | :---: |

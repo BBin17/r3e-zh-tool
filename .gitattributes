@@ -1,0 +1,2 @@
+# Translations preserve trailing whitespace inside quoted multiline values.
+translations/zh-translations.csv text eol=lf whitespace=-blank-at-eol

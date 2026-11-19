@@ -12,7 +12,7 @@
 
 从 GitHub fork 本仓库，在自己的分支修改后提交 Pull Request。说明改动涉及哪个页面、原先的问题及复测结果。有对应的 Issue 时请链接到它。
 
-网页菜单译文在 `rr_menu/assets/`。涉及多个译文时，尽量按页面拆分提交。基础文本的反馈可以直接写在 Issue 里；如果知道对应的键，也可以附两列的 `key,zh` 示例。项目收录有权公开的改动。
+基础译文在 [`translations/zh-translations.csv`](translations/zh-translations.csv)，包含 `key,zh` 两列。请保留已有的键并编辑 `zh` 列。网页菜单译文在 `rr_menu/assets/`。涉及多个译文时，尽量按页面拆分提交。项目收录有权公开的改动。
 
 ## 在 Windows 运行源码
 
@@ -23,7 +23,7 @@ python -m pip install -r requirements-build.txt
 python app.py
 ```
 
-可以通过「游戏与文件 → 更换译文表」选择 [示例 CSV](examples/zh-translations.csv) 来验证基础文本安装流程。示例只有一条译文，正式安装包带有完整基础译文。网页菜单和赛中 HUD 的适配源码在仓库中。
+从干净仓库运行时，软件默认使用仓库里的基础译文表。也可以通过「游戏与文件 → 更换译文表」选择自己的 `key,zh` CSV，或用[单条译文示例](examples/zh-translations.csv)验证安装流程。
 
 运行自动化测试：
 
@@ -33,12 +33,12 @@ python -m unittest test_installer test_updater
 
 ## 构建本地测试安装包
 
-安装 Visual Studio Build Tools 的 C++ 构建工具。使用自己生成的测试私钥，放在仓库目录外：
+使用自己生成的测试私钥，放在仓库目录外：
 
 ```powershell
 python release_signing.py --key ../r3e-local-test.pem init-key
-python release_signing.py --key ../r3e-local-test.pem pack examples/zh-translations.csv release
+python release_signing.py --key ../r3e-local-test.pem pack translations/zh-translations.csv release
 python build_release.py --local-test
 ```
 
-第一次生成私钥后，后续复用同一把测试私钥。产物位于 `dist/local-test`，测试版使用独立安装目录。测试需要更多基础译文时，可以改用自己准备的 `key,zh` CSV。项目的正式版本由维护者验证和签名后发布。
+第一次生成私钥后，后续复用同一把测试私钥。产物位于 `dist/local-test`，测试版使用独立安装目录。也可以传入自己的 `key,zh` CSV 来构建。项目的正式版本由维护者验证和签名后发布。

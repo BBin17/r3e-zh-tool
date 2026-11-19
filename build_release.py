@@ -13,28 +13,8 @@ from updater import EXE_NAME, SETUP_NAME
 
 ROOT = Path(__file__).resolve().parent
 LOCAL_SETUP_NAME = "R3E-ZH-Tool-Local-Setup.exe"
-NATIVE_MODULES = ("r3e_jca", "patch", "translation_pack")
 MENU_FILES = ("home-zh.js", "home-zh.json", "section-zh.json", "achievements-zh.json",
               "toolbar-zh.json", "legacy-zh.json", "car-setup-zh.json", "drive-zh.json", "ranked-zh.json")
-
-
-def stage_code(source: Path) -> None:
-    """Keep selected modules available to the freezer only as native extensions."""
-    source.mkdir()
-    for name in ("app", "setup_tool", "updater", "extra_ui", "steam_depot", *NATIVE_MODULES):
-        shutil.copy2(ROOT / f"{name}.py", source)
-    for name in ("rr_menu", "rr_hud"):
-        package = source / name
-        package.mkdir()
-        for module in (ROOT / name).glob("*.py"):
-            shutil.copy2(module, package)
-
-    subprocess.run([sys.executable, "-m", "Cython.Build.Cythonize", "-3", "-i",
-                    *(f"{name}.py" for name in NATIVE_MODULES)], cwd=source, check=True)
-    for name in NATIVE_MODULES:
-        if not list(source.glob(f"{name}.*.pyd")):
-            raise RuntimeError(f"未生成 Windows 扩展：{name}")
-        (source / f"{name}.py").unlink()
 
 
 def build_exe(script: Path, filename: str, output: Path, resources: list[Path],
@@ -50,8 +30,7 @@ def build_exe(script: Path, filename: str, output: Path, resources: list[Path],
 
 def app_build_args() -> list[str]:
     menu = ROOT / "rr_menu" / "assets"
-    flags = ["--copy-metadata", "fonttools", "--copy-metadata", "websocket-client",
-             "--hidden-import", "csv", "--hidden-import", "cryptography.hazmat.primitives.asymmetric.ed25519"]
+    flags = ["--copy-metadata", "fonttools", "--copy-metadata", "websocket-client"]
     for name in MENU_FILES:
         path = menu / name
         if not path.is_file():
@@ -61,16 +40,17 @@ def app_build_args() -> list[str]:
     return flags
 
 
-def verify_native_payload(exe: Path) -> None:
+def verify_app_payload(exe: Path) -> None:
     from PyInstaller.archive.readers import CArchiveReader
 
     archive = CArchiveReader(str(exe))
     python_modules = archive.open_embedded_archive("PYZ.pyz").toc
-    for name in NATIVE_MODULES:
-        if name in python_modules or not any(
-            entry.startswith(f"{name}.") and entry.endswith(".pyd") for entry in archive.toc
-        ):
-            raise RuntimeError(f"发布程序中未使用 Windows 原生模块：{name}")
+    for name in ("r3e_jca", "patch", "translation_pack"):
+        if name not in python_modules:
+            raise RuntimeError(f"发布程序缺少 Python 模块：{name}")
+    for name in (PACK_NAME, PUBLIC_KEY_NAME, "blowfish_tables.json"):
+        if name not in archive.toc:
+            raise RuntimeError(f"发布程序缺少资源：{name}")
     if any(entry.lower().endswith(".csv") for entry in archive.toc):
         raise RuntimeError("发布程序中包含明文 CSV。")
 
@@ -96,7 +76,7 @@ def main() -> None:
                         help="构建使用独立安装目录、可手动检查更新的本地测试版")
     args = parser.parse_args()
     if sys.platform != "win32":
-        parser.error("请在 Windows 上使用带 C++ 构建工具的 Python 构建。")
+        parser.error("请在 Windows 上使用 Python 构建。")
     output = (args.output or ROOT / "dist" / ("local-test" if args.local_extras else "release")).resolve()
     if args.local_extras and output == (ROOT / "dist" / "release").resolve():
         parser.error("本地测试版需要单独的输出目录。")
@@ -108,8 +88,6 @@ def main() -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="r3e-build-", dir=output.parent) as folder:
         stage = Path(folder)
-        source = stage / "source"
-        stage_code(source)
         branding = []
         setup_name = SETUP_NAME
         if args.local_extras:
@@ -117,11 +95,11 @@ def main() -> None:
             marker.write_text("local test\n", encoding="ascii")
             branding.append(marker)
             setup_name = LOCAL_SETUP_NAME
-        build_exe(source / "app.py", EXE_NAME, stage,
+        build_exe(ROOT / "app.py", EXE_NAME, stage,
                   [ROOT / "blowfish_tables.json", ROOT / "app.ico", ROOT / "app-icon-preview.png",
                    pack, public_key, *branding], app_build_args())
-        verify_native_payload(stage / EXE_NAME)
-        build_exe(source / "setup_tool.py", setup_name, stage, [stage / EXE_NAME, ROOT / "app.ico", *branding])
+        verify_app_payload(stage / EXE_NAME)
+        build_exe(ROOT / "setup_tool.py", setup_name, stage, [stage / EXE_NAME, ROOT / "app.ico", *branding])
         output.mkdir(parents=True, exist_ok=True)
         for name in (EXE_NAME, setup_name):
             copy_build_output(stage / name, output / name)

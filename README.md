@@ -61,7 +61,7 @@ RaceRoom Racing Experience（R3E）的非官方中文界面汉化工具。
 
 - 漏翻或译文不自然，可以[提交翻译反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=translation.md)，附上页面位置和截图。
 - 出现汉化失败、启动异常或还原问题，可以[提交故障反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=bug.md)，附上版本和复现步骤。
-- 想跑源码、提交译文或帮忙复测，可以看[贡献指南](CONTRIBUTING.md)。
+- 想直接改基础译文，可以编辑[中文译文表](translations/zh-translations.csv)并提交修正。想跑源码或帮忙复测，可以看[贡献指南](CONTRIBUTING.md)。
 
 ## 支持项目
 

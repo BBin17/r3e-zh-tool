@@ -677,7 +677,8 @@ class App:
             self.translations = bundled_path(PACK_NAME)
         else:
             candidates = (bundled_path(PACK_NAME), HERE / "release" / "zh-translations.csv",
-                          HERE / "zh-translations.csv", HERE / "R3E-Localization-zh.csv")
+                          HERE / "zh-translations.csv", HERE / "R3E-Localization-zh.csv",
+                          HERE / "translations" / "zh-translations.csv")
             self.translations = next((path for path in candidates if path.is_file()), HERE / "sample_zh.csv")
         self._pct = 0.0
         self._logged_dir = None

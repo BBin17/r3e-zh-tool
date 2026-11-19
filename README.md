@@ -2,19 +2,21 @@
 
 RaceRoom Racing Experience（R3E）的非官方中文界面汉化工具。
 
-本仓库提供[免费下载](https://github.com/BBin17/r3e-zh-tool/releases/latest)和软件内更新。使用和分发规则见[源码与授权](#源码与授权)。
+**[下载 Windows 安装包](https://github.com/BBin17/r3e-zh-tool/releases/latest/download/R3E-ZH-Tool-Setup.exe)** · [查看更新说明](https://github.com/BBin17/r3e-zh-tool/releases/latest)
 
-开发者 [BBin17](https://github.com/BBin17)。
+Windows 版免费使用，支持软件内更新。使用和分发规则见[源码与授权](#源码与授权)。
 
-QQ 交流群 **1128386065**。
-
-主窗口的「一键汉化并启动」会准备基础文本、网页菜单和赛中 HUD 汉化，并通过 Steam 启动游戏。[查看最新发布说明](https://github.com/BBin17/r3e-zh-tool/releases/latest)
+开发者 [BBin17](https://github.com/BBin17) · QQ 交流群 **1128386065**
 
 ## 下载与安装
 
-1. 在 [Releases](https://github.com/BBin17/r3e-zh-tool/releases/latest) 下载 `R3E-ZH-Tool-Setup.exe`。
-2. 运行安装包。程序安装到 `%LOCALAPPDATA%\Programs\R3E-ZH-Tool`，并创建开始菜单和桌面快捷方式。
-3. 用安装包覆盖升级时，请先退出正在运行的旧版汉化工具。安装或还原游戏汉化前，请先退出游戏。
+1. 下载并运行 `R3E-ZH-Tool-Setup.exe`。
+2. 退出正在运行的 RaceRoom。
+3. 打开工具，点击「一键汉化并启动」。工具会准备基础文本、网页菜单和赛中 HUD 汉化，再通过 Steam 启动游戏。
+
+**游玩时请保持汉化工具开启，网页菜单才能自动汉化。**
+
+安装包会将程序安装到 `%LOCALAPPDATA%\Programs\R3E-ZH-Tool`，并创建开始菜单和桌面快捷方式。覆盖安装前，请先退出旧版工具。
 
 ### 卸载
 

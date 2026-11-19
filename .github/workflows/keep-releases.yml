@@ -1,0 +1,45 @@
+name: Keep the latest 10 releases
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-retention
+  cancel-in-progress: false
+
+jobs:
+  retain:
+    if: github.event_name == 'workflow_dispatch' || (github.event.release.draft == false && github.event.release.prerelease == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PREVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Keep the 10 most recently published stable releases
+        shell: bash
+        run: |
+          plan="$RUNNER_TEMP/releases-to-remove.tsv"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -r '
+              [ .[][] | select(.draft == false and .prerelease == false and .published_at != null) ]
+              | sort_by(.published_at, .id) | reverse | .[10:][]
+              | [.id, .tag_name] | @tsv
+            ' > "$plan"
+          if [[ ! -s "$plan" ]]; then
+            echo "There are at most 10 published stable releases. Nothing to remove."
+            exit 0
+          fi
+          while IFS=$'\t' read -r id tag; do
+            if [[ "$PREVIEW" == "true" ]]; then
+              printf 'Would remove release %s (%s)\n' "$id" "$tag"
+            else
+              printf 'Removing release %s (%s)\n' "$id" "$tag"
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            fi
+          done < "$plan"

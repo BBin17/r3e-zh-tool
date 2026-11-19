@@ -1362,6 +1362,7 @@ class App:
         if opened is None:
             return
         window, body = opened
+        window.attributes("-topmost", True)
         self._label(body, info["tag"], size=16, bold=True).pack(anchor="w", pady=(0, self.S(8)))
         content = (info.get("notes") or "").strip()
         if content:

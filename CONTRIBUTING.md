@@ -5,7 +5,7 @@
 ## 反馈和复测
 
 - [翻译反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=translation.md)请附游戏菜单路径、漏翻位置或截图，知道合适译法也可以一起写。
-- [故障反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=bug.md)请附工具版本、游戏版本、复现步骤和相关操作日志。
+- [故障反馈](https://github.com/BBin17/r3e-zh-tool/issues/new?template=bug.md)请附复现步骤，并粘贴「操作日志 → 复制诊断」得到的信息。旧版可以手动写工具版本和游戏版本。
 - 如果你在复测某个 Issue，请在同一条 Issue 里回复使用的版本、复测步骤和结果。
 
 ## 提交源码或译文
@@ -28,7 +28,7 @@ python app.py
 运行自动化测试：
 
 ```powershell
-python -m unittest test_installer test_updater
+python -m unittest test_diagnostics test_installer test_updater
 ```
 
 ## 构建本地测试安装包

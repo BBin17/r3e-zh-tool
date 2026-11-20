@@ -25,6 +25,8 @@ from pathlib import Path
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
+from diagnostics import Diagnostics, Stage, Status
+
 # 打包成 exe 后 __file__ 指向临时解压目录，数据文件要放在 exe 所在目录
 HERE = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
         else Path(__file__).resolve().parent)
@@ -687,6 +689,8 @@ class App:
         self.extras = None
         self.local_build = setup_tool.local_build()
         self.version = f"{APP_VERSION} 本地测试" if self.local_build else APP_VERSION
+        self.diagnostics = Diagnostics(APP_VERSION, self.local_build)
+        self.copy_diagnostics_timer = None
         self.dialogs: dict[str, tk.Toplevel] = {}
         self._build()
         self._sync_actions()
@@ -714,6 +718,14 @@ class App:
 
     def _row(self, parent):
         return tk.Frame(parent, bg=parent.cget("bg"))
+
+    def wrap_to_width(self, label):
+        def fit(event):
+            width = max(1, event.width - self.S(6))
+            if int(label.cget("wraplength")) != width:
+                label.configure(wraplength=width)
+
+        label.bind("<Configure>", fit, add="+")
 
     def _panel(self, parent, *, color=SURFACE, border=RULE):
         outline = self._row(parent)
@@ -797,6 +809,7 @@ class App:
         tools.pack(side="right")
         self._build_update_panel(tools)
         self.status.pack(side="left", fill="x", expand=True, padx=(0, self.S(12)))
+        self.wrap_to_width(self.status)
 
     def _build_header(self, parent, resources):
         panel, hero = self._panel(parent, color=HERO_BG, border=HERO_BG)
@@ -832,10 +845,10 @@ class App:
         content = self._row(body)
         toggle = self._button(heading, "展开", lambda: self._toggle_section(content, toggle))
         toggle.pack(side="right")
-        return content
+        return content, heading
 
     def _build_game_panel(self, parent):
-        body = self._expandable_panel(parent, "游戏与文件")
+        body, _ = self._expandable_panel(parent, "游戏与文件")
 
         folder = self._row(body)
         folder.pack(fill="x", pady=(self.S(5), self.S(5)))
@@ -872,7 +885,9 @@ class App:
             side="left", fill="x", expand=True, ipady=self.S(4))
 
     def _build_log_panel(self, parent):
-        self.log_frame = self._expandable_panel(parent, "操作日志", expand=True)
+        self.log_frame, heading = self._expandable_panel(parent, "操作日志", expand=True)
+        self.copy_diagnostics_button = self._button(heading, "复制诊断", self.copy_diagnostics)
+        self.copy_diagnostics_button.pack(side="right", padx=(0, self.S(7)))
         self.log_text = tk.Text(self.log_frame, bg=WELL, fg=INK, bd=0, relief="flat", wrap="word",
                                 font=(FAMILY, -self.S(12)), height=4, width=1,
                                 padx=self.S(9), pady=self.S(7), spacing3=self.S(2),
@@ -916,6 +931,36 @@ class App:
         self.basic_summary = self._label(summary, size=12, color=MUTED, justify="left",
                                          wraplength=self.S(420))
         self.basic_summary.pack(anchor="w", pady=(self.S(3), 0))
+        self.component_summary = self._label(summary, size=12, color=MUTED, justify="left",
+                                              wraplength=self.S(420))
+        self.component_summary.pack(anchor="w", pady=(self.S(4), 0))
+        self._refresh_component_status()
+
+    def _refresh_component_status(self):
+        states = self.diagnostics.states
+        self.component_summary.configure(text=f"网页菜单：{states[Stage.MENU]}    赛中 HUD：{states[Stage.HUD]}")
+
+    def set_component_status(self, component: Stage, status: Status):
+        self.diagnostics.states[component] = status
+        if component == Stage.BASE and status in (Status.PREPARING, Status.ORIGINAL):
+            self.basic_state.configure(text=status, fg=MUTED)
+        self._refresh_component_status()
+
+    def copy_diagnostics(self):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.diagnostics.report())
+        except tk.TclError:
+            messagebox.showwarning(APP_NAME, "暂时无法复制，请稍后重试。", parent=self.root)
+            return
+        if self.copy_diagnostics_timer is not None:
+            self.root.after_cancel(self.copy_diagnostics_timer)
+        self.copy_diagnostics_button.configure(text="已复制")
+        self.copy_diagnostics_timer = self.root.after(1800, self._reset_copy_diagnostics)
+
+    def _reset_copy_diagnostics(self):
+        self.copy_diagnostics_button.configure(text="复制诊断")
+        self.copy_diagnostics_timer = None
 
     def _open_info(self, title):
         existing = self.dialogs.get(title)
@@ -1099,7 +1144,7 @@ class App:
                 elif kind == "done":
                     self._finish(payload)
                 elif kind == "error":
-                    self._fail(payload)
+                    self._fail(*payload)
                 elif kind == "update_info":
                     self._on_update_info(payload)
                 elif kind == "update_failed":
@@ -1146,12 +1191,27 @@ class App:
         self.set_progress(100)
         self.auto_detect(silent=True)
 
-    def _fail(self, message: str):
+    def report_issue(self, stage: Stage, details: str, *, prefix="") -> str:
+        issue = self.diagnostics.record(stage, details)
+        self._append_log(f"{stage}错误：{details}")
+        return prefix + issue.notice
+
+    def _fail(self, stage: Stage, details: str, *, prefix="") -> str:
         self._set_busy(False)
-        self.status.configure(text="操作失败")
+        notice = self.report_issue(stage, details, prefix=prefix)
+        self.status.configure(text=notice)
         self.set_progress(0)
-        self._append_log("错误: " + message)
-        messagebox.showerror(APP_NAME, message)
+        messagebox.showerror(APP_NAME, f"{notice}\n\n详细原因：{details}", parent=self.root)
+        return notice
+
+    def record_restore_result(self, component: Stage, error: str | None):
+        if error is not None:
+            self.set_component_status(component, Status.CHECK)
+            self.diagnostics.record(Stage.RESTORE, f"{component}：{error}")
+        elif component == Stage.MENU:
+            self.set_component_status(component, Status.INACTIVE)
+        else:
+            self.set_component_status(component, Status.ORIGINAL)
 
     # -- 动作 --------------------------------------------------
     def auto_detect(self, silent=False):
@@ -1178,7 +1238,7 @@ class App:
                     self.events.put(("status", "正在读取 Localization.jca …"))
                 info = inst.inspect()
             except Exception as exc:  # noqa: BLE001
-                self.events.put(("state", {"dir": game, "error": str(exc)}))
+                self.events.put(("state", {"dir": game, "error": str(exc), "silent": silent}))
                 return
             self.events.put(("state", {"dir": game, "info": info, "installer": inst, "silent": silent}))
 
@@ -1193,7 +1253,10 @@ class App:
             return
         game = normalize_game_dir(Path(path))
         if game is None or not (game / LOC_REL).is_file():
-            messagebox.showerror(APP_NAME, "所选目录没有 Localization.jca。请选择 Steam 中的 RaceRoom 安装目录。")
+            details = "所选目录未找到 Localization.jca。"
+            notice = self.report_issue(Stage.DETECT, details)
+            self.status.configure(text=notice)
+            messagebox.showerror(APP_NAME, notice, parent=self.root)
             return
         self.manual_game_dir = game
         self.auto_detect()
@@ -1223,6 +1286,13 @@ class App:
     def _apply_state(self, payload: dict):
         game = payload.get("dir")
         info = payload.get("info", {})
+        previous_game = self.game_dir
+        previous_build = self.diagnostics.steam_build
+        self.diagnostics.set_game_versions(info.get("build"), info.get("exe"))
+        build_changed = previous_build != "未读取" and self.diagnostics.steam_build not in ("未读取", previous_build)
+        if previous_game != game or build_changed:
+            self.set_component_status(Stage.MENU, Status.INACTIVE)
+            self.set_component_status(Stage.HUD, Status.UNKNOWN)
         self.detecting = False
         self.game_dir = game
         self.installer = payload.get("installer")
@@ -1234,35 +1304,46 @@ class App:
         for var in self.stat_vars.values():
             var.set("—")
         if "error" in payload:
+            self.set_component_status(Stage.BASE, Status.CHECK)
             self.build_label.configure(text="读取失败")
             self.basic_state.configure(text="读取失败", fg=BAD)
             self.basic_summary.configure(text="展开「游戏与文件」查看详情。")
             self._set_state("状态读取失败", payload["error"], BAD)
-            self.status.configure(text="可重新检测或选择游戏目录")
+            notice = self.report_issue(Stage.DETECT, payload["error"])
+            if not payload.get("silent"):
+                self.status.configure(text=notice)
             return
         if game is None:
+            self.set_component_status(Stage.BASE, Status.UNKNOWN)
             self.build_label.configure(text="未检测到安装")
             self.basic_state.configure(text="等待选择游戏", fg=MUTED)
             self.basic_summary.configure(text="")
             self._set_state("未检测到 RaceRoom", "请确认游戏已通过 Steam 安装，或手动选择目录。", BAD)
-            self.status.configure(text="等待选择游戏目录")
+            notice = self.report_issue(Stage.DETECT, "未检测到 RaceRoom")
+            if not payload.get("silent"):
+                self.status.configure(text=notice)
             return
         self.build_label.configure(
             text=f"Build {info.get('build') or '—'}  |  RRRE64 {info.get('exe') or '—'}")
         if not self.can_install:
+            self.set_component_status(Stage.BASE, Status.CHECK)
             self.basic_state.configure(text="缺少游戏文本", fg=BAD)
             self.basic_summary.configure(text="未找到 Localization.jca")
             self._set_state("已检测到 RaceRoom", str(game), GOOD)
-            self.status.configure(text="请检查游戏目录或通过 Steam 验证文件。")
+            notice = self.report_issue(Stage.DETECT, "未找到 Localization.jca")
+            if not payload.get("silent"):
+                self.status.configure(text=notice)
             return
         cjk = info["cjk"]
         if info["patched"]:
+            self.set_component_status(Stage.BASE, Status.APPLIED)
             if info.get("steam_verified"):
                 backup_status = "原版备份与 Steam 当前版本一致"
             else:
                 backup_status = "可使用本机备份还原" if info["restorable"] else "原版备份未匹配"
             self.basic_state.configure(text="已汉化", fg=GOOD)
         else:
+            self.set_component_status(Stage.BASE, Status.ABSENT)
             backup_status = f"文件修改于 {info['mtime']}"
             self.basic_state.configure(text="未安装", fg=MUTED)
         self._set_state("已检测到 RaceRoom", str(game), GOOD, backup_status)
@@ -1275,7 +1356,7 @@ class App:
             self._logged_dir = game
             self._append_log(f"游戏目录: {game}")
             self._append_log(f"Localization.jca: {info['size']:,} 字节，中文条目 {cjk}")
-        if info["patched"] and not info["restorable"]:
+        if not payload.get("silent") and info["patched"] and not info["restorable"]:
             self.status.configure(text="没有匹配的原版备份。需要恢复时，请使用 Steam 验证游戏文件。")
         elif not payload.get("silent"):
             self.status.configure(text="就绪")
@@ -1394,9 +1475,9 @@ class App:
         self.update_busy = False
         if self.pending_update is None:
             self.update_label.configure(text="更新检查未完成", fg=WARN)
-        self._append_log("更新检查: " + message)
+        notice = self.report_issue(Stage.UPDATE_CHECK, message)
         if manual:
-            messagebox.showwarning(APP_NAME, message)
+            messagebox.showwarning(APP_NAME, f"{notice}\n\n详细原因：{message}", parent=self.root)
 
     def do_update(self):
         info = self.pending_update
@@ -1420,9 +1501,9 @@ class App:
                     info, target_dir, lambda pct: self.events.put(("progress", pct)))
                 self.events.put(("update_ready", new))
             except updater.UpdateError as exc:
-                self.events.put(("error", str(exc)))
+                self.events.put(("error", (Stage.UPDATE, str(exc))))
             except Exception as exc:  # noqa: BLE001
-                self.events.put(("error", f"下载更新失败：{exc}"))
+                self.events.put(("error", (Stage.UPDATE, f"下载更新失败：{exc}")))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1430,7 +1511,7 @@ class App:
         try:
             updater.apply_update(Path(new["exe"]), new["sha256"])
         except (updater.UpdateError, OSError) as exc:
-            self._fail(str(exc))
+            self._fail(Stage.UPDATE, str(exc))
             return
         self._append_log("新版本已下载并校验通过，正在重新启动…")
         self.root.after(400, self.root.destroy)
@@ -1466,7 +1547,8 @@ def main() -> None:
     app = App(root)
     root.deiconify()
     if selftest:
-        buttons = [app.btn_check, app.help_button, app.sponsor_button, app.about_button]
+        buttons = [app.btn_check, app.help_button, app.sponsor_button, app.about_button,
+                   app.copy_diagnostics_button]
         from extra_ui import probe
 
         if getattr(sys, "frozen", False):

@@ -6,6 +6,7 @@ from tkinter import messagebox
 
 import websocket
 
+from diagnostics import Stage, Status, issue_for
 from rr_hud import bundle as hud_bundle
 from rr_hud import recipe as hud_recipe
 from rr_menu import engine as home_zh
@@ -29,17 +30,21 @@ def restore_base_text(installer):
     return f'已恢复备份 {installer.restore()}'
 
 
-def restore_game_files(game, installer, log):
+def restore_game_files(game, installer, log, report=None):
     results = []
     failed = False
-    for name, action in (('赛中 HUD', lambda: hud_bundle.restore(game)),
-                         ('基础文本', lambda: restore_base_text(installer))):
+    for component, action in ((Stage.HUD, lambda: hud_bundle.restore(game)),
+                              (Stage.BASE, lambda: restore_base_text(installer))):
+        error = None
         try:
             result = action()
         except Exception as exc:
-            result = f'未完成。{exc}'
+            error = str(exc)
+            result = f'未完成。{error}'
             failed = True
-        message = f'{name}：{result}'
+        if report is not None:
+            report(component, error)
+        message = f'{component}：{result}'
         log(message)
         results.append(message)
     return results, failed
@@ -64,6 +69,7 @@ class ExtraControls:
         self.menu_status = app._label(description, '基础文本、网页菜单和赛中 HUD', size=12, color=status_color,
                                       justify='left', wraplength=app.S(410))
         self.menu_status.pack(fill='x', pady=(app.S(3), 0))
+        app.wrap_to_width(self.menu_status)
 
         self.restore_game = app._button(restore, '恢复原版', self.restore_original, 'secondary')
         self.restore_game.pack(side='right')
@@ -106,10 +112,12 @@ class ExtraControls:
                          daemon=True).start()
 
     def _launch(self, game, installer, translations, include_text):
-        stage = '启动检查'
+        stage = Stage.START
         try:
             steam = self._steam_for_game(game)
+            stage = Stage.MENU
             script = home_zh.load_translation()
+            stage = Stage.START
             event = home_zh.WatchEvent()
             with event.own() as handle:
                 def stopped(milliseconds):
@@ -119,30 +127,34 @@ class ExtraControls:
                     raise RuntimeError('启动已取消。')
                 self.app.record_localized_game(game)
                 if include_text:
-                    stage = '基础文本'
+                    stage = Stage.BASE
+                    self.post(self.app.set_component_status, Stage.BASE, Status.PREPARING)
                     self.post(self._show_stage, '正在检查基础文本…', 10)
                     if installer is None:
                         raise RuntimeError('无法读取当前安装的基础文本，请在「游戏与文件」中检查游戏目录。')
                     result = installer.install(translations, progress=lambda pct: self.app.progress(10 + pct * .55))
                     self.post(self._basic_ready, result)
 
-                stage = '赛中 HUD'
+                stage = Stage.HUD
+                self.post(self.app.set_component_status, Stage.HUD, Status.PREPARING)
                 self.post(self._show_stage, '正在准备赛中 HUD…', 65)
                 self._prepare_hud(game, stopped)
-                stage = 'Steam 启动'
+                self.post(self.app.set_component_status, Stage.HUD, Status.READY)
+                stage = Stage.STEAM
                 self.post(self._show_stage, '正在通过 Steam 启动 RaceRoom…', 80)
                 self._start_steam(steam, stopped)
-                stage = '网页菜单'
+                stage = Stage.MENU
+                self.post(self.app.set_component_status, Stage.MENU, Status.WAITING)
                 self.post(self._show_stage, '赛中 HUD 已就绪，正在等待网页菜单…', 90)
                 home_zh.apply_pages(websocket, script, 120, stopped, True,
                                     report=lambda text: self._report_menu(text, include_text))
         except Exception as exc:
-            if stage == '基础文本':
+            if stage == Stage.BASE:
                 self.post(self._offer_menu_hud_only, game, str(exc))
                 return
-            self.post(self._menu_finished, f'{stage}未完成：{exc}')
+            self.post(self._menu_finished, stage, str(exc))
         else:
-            self.post(self._menu_finished, None)
+            self.post(self._menu_finished, Stage.MENU, None)
 
     def _steam_for_game(self, game: Path) -> Path:
         if self.game_running():
@@ -173,6 +185,7 @@ class ExtraControls:
     def _basic_ready(self, result):
         applied = result['applied']
         self.app.basic_patched = True
+        self.app.set_component_status(Stage.BASE, Status.APPLIED)
         self.app.basic_state.configure(text='已匹配')
         if result.get('cached'):
             summary = '基础文本未变更，已跳过逐条比对'
@@ -181,47 +194,59 @@ class ExtraControls:
         self.app.basic_summary.configure(text=summary)
 
     def _offer_menu_hud_only(self, game, error):
-        self.app.log(f'基础文本未完成：{error}')
+        self.app.set_component_status(Stage.BASE, Status.FAILED)
+        notice = self.app.report_issue(Stage.BASE, error)
         self.app.basic_state.configure(text='未完成')
-        self._show_stage('基础文本未完成')
+        self._show_stage(notice)
         if messagebox.askyesno('基础文本未完成',
-                               f'{error}\n\n是否保留当前基础文本，仅启用菜单与 HUD 并启动？',
+                               f'{notice}\n\n详细原因：{error}\n\n是否保留当前基础文本，仅启用菜单与 HUD 并启动？',
                                default=messagebox.NO, parent=self.app.root):
             self._start_launch(game, None, None, include_text=False)
         else:
             self.menu_active = self.preparing = False
             self.app._set_busy(False)
-            self._show_stage('已取消启动，可检查译文表后重试。', 0)
+            self._show_stage(notice, 0)
 
     def _report_menu(self, text, include_text):
         self.app.log(text)
         if text.startswith('已汉化 '):
             self.post(self._menu_ready, include_text)
+        elif text.startswith('暂时无法汉化 '):
+            self.post(self.app.diagnostics.record, Stage.MENU, text)
 
     def _menu_ready(self, include_text):
         if self.stopping or self.cancel_menu.is_set() or not self.preparing:
             return
         self.preparing = False
+        self.app.set_component_status(Stage.MENU, Status.ENABLED)
         self._show_stage(
             '中文菜单和赛中 HUD 已启用。游玩时请保持工具开启。' if include_text else
             '已启用菜单与 HUD，未更新基础文本。游玩时请保持工具开启。', 100)
         self.app._set_busy(False)
         self.app.auto_detect(silent=True)
 
-    def _menu_finished(self, error):
+    def _menu_finished(self, stage: Stage, error: str | None):
         was_preparing = self.preparing
         self.menu_active = self.preparing = False
         if self.stopping or self.cancel_menu.is_set():
             self.sync_actions()
             return
+        if stage == Stage.HUD:
+            self.app.set_component_status(Stage.HUD, Status.FAILED)
+        elif stage == Stage.MENU:
+            status = Status.DISCONNECTED if error is not None or was_preparing else Status.INACTIVE
+            self.app.set_component_status(Stage.MENU, status)
+        prefix = '基础文本已汉化。' if self.app.basic_patched and stage in (Stage.HUD, Stage.STEAM, Stage.MENU) else ''
         if was_preparing:
-            self.menu_status.configure(text='启动流程未完成。')
-            self.app._fail(error or '菜单汉化在就绪前停止。')
+            notice = self.app._fail(stage, error or '菜单汉化在就绪前停止。', prefix=prefix)
+            self.menu_status.configure(text=notice)
             self.app.auto_detect(silent=True)
         else:
-            self._show_stage(error or '网页菜单汉化已停止，可再次一键启动。', 0)
-            if error:
-                self.app.log(error)
+            notice = self.app.report_issue(stage, error, prefix=prefix) if error else '网页菜单汉化已停止，可再次一键启动。'
+            if self.app.busy:
+                self.menu_status.configure(text=notice)
+            else:
+                self._show_stage(notice, 0)
             self.sync_actions()
 
     def restore_original(self):
@@ -255,25 +280,38 @@ class ExtraControls:
     def _restore_game_files(self, game, installer):
         if self.game_running():
             raise RuntimeError('请先退出 RaceRoom，再恢复原版。')
+        error = None
         try:
             menu = f'网页菜单：{self._stop_menu()}'
-            menu_failed = False
         except Exception as exc:
-            menu = f'网页菜单：未完成。{exc}'
-            menu_failed = True
+            error = str(exc)
+            menu = f'网页菜单：未完成。{error}'
         self.app.log(menu)
-        results, failed = restore_game_files(game, installer, self.app.log)
-        return '\n\n'.join([menu, *results]), menu_failed or failed
+
+        def report(component, reason):
+            self.post(self.app.record_restore_result, component, reason)
+
+        report(Stage.MENU, error)
+        results, failed = restore_game_files(game, installer, self.app.log, report=report)
+        return '\n\n'.join([menu, *results]), error is not None or failed
 
     def _restore_failed(self, error):
         self.stopping = False
-        self.menu_status.configure(text='恢复原版未完成。')
-        self.app._fail(error)
+        notice = self.app._fail(Stage.RESTORE, error)
+        self.menu_status.configure(text=notice)
 
     def _restore_finished(self, results, failed):
         self.stopping = False
-        summary = '部分项目未能恢复。' if failed else '恢复原版已完成。'
-        self.menu_status.configure(text=summary)
-        self.app._finish(summary)
-        show_results = messagebox.showwarning if failed else messagebox.showinfo
-        show_results('恢复原版', results, parent=self.app.root)
+        if failed:
+            issues = self.app.diagnostics.issues
+            issue = issues[-1] if issues and issues[-1].stage == Stage.RESTORE else issue_for(Stage.RESTORE, '')
+            summary = f'部分项目未能恢复。{issue.action}'
+            self.app._set_busy(False)
+            self._show_stage(summary, 0)
+            self.app.auto_detect(silent=True)
+            messagebox.showwarning('恢复原版', f'{summary}\n\n{results}', parent=self.app.root)
+        else:
+            summary = '恢复原版已完成。'
+            self.menu_status.configure(text=summary)
+            self.app._finish(summary)
+            messagebox.showinfo('恢复原版', results, parent=self.app.root)

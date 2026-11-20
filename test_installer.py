@@ -479,8 +479,10 @@ class DetectionTest(unittest.TestCase):
         ui.detecting = True
         ui.extras = None
         ui.installer = Mock()
+        ui.game_dir = None
+        ui.diagnostics = app.Diagnostics("0.3.30")
         for name in ("build_label", "status", "btn_folder", "btn_detect", "btn_csv", "btn_open",
-                     "basic_state", "basic_summary", "set_progress", "_set_state"):
+                     "basic_state", "basic_summary", "component_summary", "set_progress", "_set_state", "_append_log"):
             setattr(ui, name, Mock())
         ui.stat_vars = {"done": Mock()}
         ui._apply_state({"dir": Path("game"), "error": "broken JCA"})
@@ -559,6 +561,20 @@ class OneClickTest(unittest.TestCase):
         self.hud.assert_not_called()
         self.steam_start.assert_not_called()
 
+    def test_unconnected_menu_keeps_the_successful_base_and_hud_status(self):
+        self.controls.preparing = True
+        self.controls.stopping = False
+        self.controls.menu_status = Mock()
+        self.controls.app.basic_patched = True
+        error = "未找到可汉化的游戏页面。"
+
+        self.controls._menu_finished(app.Stage.MENU, error)
+
+        self.controls.app.set_component_status.assert_called_once_with(app.Stage.MENU, app.Status.DISCONNECTED)
+        self.controls.app._fail.assert_called_once_with(app.Stage.MENU, error, prefix="基础文本已汉化。")
+        self.controls.app.auto_detect.assert_called_once_with(silent=True)
+        self.assertFalse(self.controls.menu_active)
+
     def test_restore_continues_with_verified_base_backup_if_hud_fails(self):
         self.installer.inspect.return_value = {"exists": True, "patched": True}
         self.installer.restore.return_value = "Localization-backup.jca"
@@ -570,6 +586,9 @@ class OneClickTest(unittest.TestCase):
         self.assertIn("网页菜单：已停用汉化", result)
         self.assertIn("赛中 HUD：未完成。HUD 备份不匹配", result)
         self.assertIn("基础文本：已恢复备份 Localization-backup.jca", result)
+        for component, error in ((app.Stage.MENU, None), (app.Stage.HUD, "HUD 备份不匹配"),
+                                 (app.Stage.BASE, None)):
+            self.controls.post.assert_any_call(self.controls.app.record_restore_result, component, error)
 
 
 if __name__ == "__main__":

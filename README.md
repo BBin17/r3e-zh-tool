@@ -38,7 +38,7 @@ RaceRoom Racing Experience（R3E）的非官方中文界面汉化工具。
 
 工具启动后会自动检查 GitHub Releases，也可以手动点「检查更新」。发现新版后点「下载更新」。从 v0.3.28 起，工具会验证发布签名和程序的 SHA256，基础译文随程序一起更新。
 
-- **v0.3.2 至 v0.3.27**：可以直接使用软件内更新。
+- **v0.3.2 至 v0.3.27**：兼容期内可以直接使用软件内更新。兼容期结束后，请使用安装包覆盖安装一次。
 - **v0.3、v0.3.1，或软件内升级失败**：退出汉化工具，再[下载 Windows 安装包](https://github.com/BBin17/r3e-zh-tool/releases/latest/download/R3E-ZH-Tool-Setup.exe)覆盖安装，无需先卸载。
 
 ## 汉化范围

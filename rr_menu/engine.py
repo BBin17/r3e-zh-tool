@@ -20,7 +20,8 @@ PORT = 8080
 MENU_ROUTES = {'/game/menu/main', '/game/menu/game_modes', '/leaderboard', '/my-lap-times',
                '/leaderboard-rankings', '/multiplayer-rankings', '/competitions', '/store',
                '/store/cars', '/store/tracks', '/store/packs', '/store/recommended',
-               '/store/discounted', '/store/promotions', '/news', '/user-settings'}
+               '/store/discounted', '/store/promotions', '/store/starter-pass', '/store/complete',
+               '/news', '/user-settings'}
 PROFILE_ROUTE = re.compile(r'/users/[^/]+(?:/(?:races|statistics|achievements|leaderboards|follows))?')
 DRIVE_ROUTE = re.compile(r'/game/menu/launcher/(?:single-race|championship|track-day|leaderboard-challenge|test-cars|competition)(?:/[A-Za-z0-9_-]+){0,2}')
 RANKED_ROUTE = re.compile(r'/ranked(?:/[^/]+){0,3}|/game/menu/launcher/multiplayer')

@@ -154,7 +154,7 @@
     if (/^\/game-menu\/options(?:\/[\w-]+){0,2}$/.test(path)) return 'gameOptions';
     if (/^\/users\/[^/]+(?:\/(?:races|statistics|achievements|leaderboards|follows))?$/.test(path)) return 'profile';
     if (path === '/competitions') return 'competitions';
-    if (/^\/store(?:\/(?:cars|tracks|packs|recommended|discounted|promotions))?$/.test(path)) return 'store';
+    if (/^\/store(?:\/(?:cars|tracks|packs|recommended|discounted|promotions|starter-pass|complete))?$/.test(path)) return 'store';
     return null;
   }
 
@@ -324,6 +324,62 @@
     return null;
   }
 
+  const storeMonths = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function storeDate(value) {
+    const parts = /^(\d{1,2}) ([A-Za-z]+)$/.exec(value);
+    if (!parts) return value;
+    const month = storeMonths.indexOf(parts[2]) + 1;
+    return month ? `${month}月${Number(parts[1])}日` : value;
+  }
+
+  function storeTranslation(text, dictionary) {
+    const price = matchLabel(text, /^(?<label>.+?) (?<amount>\p{Sc}\s*\d[\d.,\s]*|\d[\d.,\s]*\s*(?:\p{Sc}|[A-Z]{3}))$/u,
+      { label: ['c35b0729f2901714', 'a40140721ecc8bcd'] });
+    if (price) return textKey(price.label) === 'c35b0729f2901714'
+      ? `支付 ${price.amount}` : `以 ${price.amount} 购买通行证`;
+    const credits = matchLabel(text, /^(?<label>\S+) (?<amount>\d[\d.,\s]*) (?<unit>\S+)$/,
+      { label: '555cbe6879fe4870', unit: 'fd2fa8a38f7f3798' });
+    if (credits) return `保留 ${credits.amount} VRP`;
+    const days = matchLabel(text, /^(?:(?<label>.+?) )?(?<days>\d+) (?<unit>\S+)$/,
+      { unit: ['e44f21fd765dba8c', 'f691d28a64a0eeb7'] });
+    if (days) {
+      if (!days.label) return `${days.days} 天`;
+      if (['7ecf90df29804d63', '2a3c99d352aa39ed'].includes(textKey(days.label))) return `畅玩全部内容 ${days.days} 天`;
+    }
+    const day = matchLabel(text, /^(?<label>.+?) (?<day>\d+)$/, { label: 'cb0f057a7a89fd35' });
+    if (day) return `第 ${day.day} 天`;
+    const ends = matchLabel(text, /^(?<label>.+?) (?<days>\d+) (?<unit>\S+) (?<after>.+?) \((?<date>[^()]+)\)$/,
+      { label: 'ed4b4ad310d20d56', unit: ['e44f21fd765dba8c', 'f691d28a64a0eeb7'], after: 'ced96df3aff20a4c' });
+    if (ends) return `此通行证将在激活 ${ends.days} 天后到期（${storeDate(ends.date)}）`;
+    const date = matchLabel(text, /^(?<label>.+?) (?<date>\d{1,2} [A-Za-z]+)$/,
+      { label: ['ae5379d507f744fb', '437c2f3c6523c18c'] });
+    if (date) return `${textKey(date.label) === 'ae5379d507f744fb' ? '有效期至' : '促销截止'} ${storeDate(date.date)}`;
+    const items = matchLabel(text, /^(?<cars>\d+) (?<carWord>\S+) (?<join>\S+) (?<count>\d+) (?<itemWord>\S+)(?: (?<forWord>\S+) (?<days>\d+) (?<unit>\S+))?$/,
+      { carWord: ['95276dd65e163909', '047458e169697274'], join: ['41387a9e4d5fa44b', '0f29c2a66beda11e'] });
+    if (items) {
+      const type = textKey(items.itemWord);
+      if (textKey(items.join) === '41387a9e4d5fa44b' && !items.days &&
+          ['702da6a79f7632f0', 'ab3e0bffe45c07dd'].includes(type)) return `${items.cars} 辆赛车 · ${items.count} 个组别`;
+      if (textKey(items.join) === '0f29c2a66beda11e' && ['50b1805d2f54d981', '7b3d6c3c34355b73'].includes(type)) {
+        const content = `${items.cars} 辆赛车和 ${items.count} 条赛道`;
+        if (!items.days) return content;
+        if (textKey(items.forWord) === 'acf38390c100b3d3' && ['e44f21fd765dba8c', 'f691d28a64a0eeb7'].includes(textKey(items.unit))) {
+          return `${content}，畅玩 ${items.days} 天`;
+        }
+      }
+    }
+    const owned = matchLabel(text, /^(?<owned>\d+) (?<of>\S+) (?<total>\d+) (?<label>\S+)$/,
+      { of: '69343c6802bf0823', label: 'e367307e4b93008b' });
+    if (owned) return `已拥有 ${owned.owned} / ${owned.total}`;
+    const tab = /^(?<label>\S+) · (?<count>\d+)$/.exec(text)?.groups;
+    if (tab && ['15554cf64ec0aeb0', '96c4fa7dcb675feb'].includes(textKey(tab.label))) {
+      return `${dictionary[textKey(tab.label)]} · ${tab.count}`;
+    }
+    return null;
+  }
+
   function refresh() {
     const section = sectionForPage();
     if (section !== lastSection) restore();
@@ -392,6 +448,9 @@
         }
       }
       if (!chinese && section === 'carSetup') chinese = carSetupTranslation(parent, text, page);
+      if (!chinese && section === 'store' && parent.closest('.焧, .呕, .徹, .徸, .辜')) {
+        chinese = storeTranslation(text, page.text);
+      }
       if (!chinese && section === 'replayHud' && parent.matches('.蘴 .蘽')) {
         const lap = matchLabel(text, /^(?<word>\S+)\s+(?<count>\d+)$/, { word: 'b6eb148a8b3a1b37' });
         if (lap) chinese = `第 ${lap.count} 圈`;

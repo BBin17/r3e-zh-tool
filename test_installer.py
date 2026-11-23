@@ -480,8 +480,10 @@ class DetectionTest(unittest.TestCase):
         ui.extras = None
         ui.installer = Mock()
         ui.game_dir = None
+        ui.saved_translation = False
+        ui.default_translations = ui.translations = Path("test.csv")
         ui.diagnostics = app.Diagnostics("0.3.30")
-        for name in ("build_label", "status", "btn_folder", "btn_detect", "btn_csv", "btn_open",
+        for name in ("build_label", "status", "btn_folder", "btn_detect", "btn_csv", "btn_open", "btn_default_csv",
                      "basic_state", "basic_summary", "component_summary", "set_progress", "_set_state", "_append_log"):
             setattr(ui, name, Mock())
         ui.stat_vars = {"done": Mock()}
@@ -515,6 +517,7 @@ class OneClickTest(unittest.TestCase):
         self.watch = self.enterContext(patch("extra_ui.home_zh.WatchEvent")).return_value
         self.watch.own.return_value = nullcontext("watch handle")
         self.watch.wait.return_value = False
+        self.enterContext(patch("extra_ui.home_zh.game_listens_locally", return_value=False))
         self.enterContext(patch("extra_ui.home_zh.load_translation", return_value="translations"))
         self.hud = self.enterContext(patch("extra_ui.hud_bundle.prepare_launch"))
         self.steam_start = self.enterContext(patch("extra_ui.subprocess.Popen"))
@@ -533,7 +536,7 @@ class OneClickTest(unittest.TestCase):
             call.base(self.translations, progress=ANY),
             call.hud(self.game, running=False),
             call.steam([str(self.steam), "-applaunch", "211500", "-webdev"], cwd=self.steam.parent),
-            call.menu(ANY, "translations", 120, ANY, True, report=ANY),
+            call.menu(ANY, "translations", 120, ANY, True, report=ANY, on_pages=ANY),
         ])
 
     def test_base_failure_waits_for_consent_before_launching_with_menu_and_hud(self):
@@ -541,7 +544,7 @@ class OneClickTest(unittest.TestCase):
         self.controls._launch(self.game, self.installer, self.translations, True)
         self.hud.assert_not_called()
         self.steam_start.assert_not_called()
-        self.controls.post.assert_called_with(self.controls._offer_menu_hud_only, self.game, "无匹配译文")
+        self.controls.post.assert_called_with(self.controls._offer_menu_hud_only, self.game, "无匹配译文", True)
 
         with patch("extra_ui.messagebox.askyesno", return_value=True), \
              patch.object(self.controls, "_start_launch", side_effect=self.controls._launch):

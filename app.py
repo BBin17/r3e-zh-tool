@@ -675,13 +675,21 @@ class App:
         self.can_install = False
         self.basic_patched = False
         self.has_backups = False
-        if getattr(sys, "frozen", False):
-            self.translations = bundled_path(PACK_NAME)
+        frozen = getattr(sys, "frozen", False)
+        if frozen:
+            self.default_translations = bundled_path(PACK_NAME)
         else:
             candidates = (bundled_path(PACK_NAME), HERE / "release" / "zh-translations.csv",
                           HERE / "zh-translations.csv", HERE / "R3E-Localization-zh.csv",
                           HERE / "translations" / "zh-translations.csv")
-            self.translations = next((path for path in candidates if path.is_file()), HERE / "sample_zh.csv")
+            self.default_translations = next((path for path in candidates if path.is_file()), HERE / "sample_zh.csv")
+        config_dir = setup_tool.install_dir()
+        if not frozen:
+            config_dir = config_dir.with_name("R3E-ZH-Tool-Source")
+        self.translation_preference = config_dir / "translation-file.txt"
+        self.translations = self.default_translations
+        self.saved_translation = False
+        self._load_translation_preference()
         self._pct = 0.0
         self._logged_dir = None
         self.update_busy = False
@@ -690,7 +698,7 @@ class App:
         self.local_build = setup_tool.local_build()
         self.version = f"{APP_VERSION} 本地测试" if self.local_build else APP_VERSION
         self.diagnostics = Diagnostics(APP_VERSION, self.local_build)
-        self.copy_diagnostics_timer = None
+        self.copy_feedback_timers = {}
         self.dialogs: dict[str, tk.Toplevel] = {}
         self._build()
         self._sync_actions()
@@ -878,6 +886,8 @@ class App:
         self._button(file_row, "创建桌面快捷方式", self.create_desktop_shortcut).pack(side="right")
         self.btn_open = self._button(file_row, "备份目录", self.open_backups)
         self.btn_open.pack(side="right")
+        self.btn_default_csv = self._button(file_row, "恢复内置译文", self.restore_default_translations)
+        self.btn_default_csv.pack(side="right")
         self.btn_csv = self._button(file_row, "更换译文表", self.choose_csv)
         self.btn_csv.pack(side="right")
         self.csv_var = tk.StringVar(value=self.translations.name)
@@ -888,6 +898,8 @@ class App:
         self.log_frame, heading = self._expandable_panel(parent, "操作日志", expand=True)
         self.copy_diagnostics_button = self._button(heading, "复制诊断", self.copy_diagnostics)
         self.copy_diagnostics_button.pack(side="right", padx=(0, self.S(7)))
+        self.copy_translation_button = self._button(heading, "复制漏翻反馈", self.copy_translation_feedback)
+        self.copy_translation_button.pack(side="right", padx=(0, self.S(7)))
         self.log_text = tk.Text(self.log_frame, bg=WELL, fg=INK, bd=0, relief="flat", wrap="word",
                                 font=(FAMILY, -self.S(12)), height=4, width=1,
                                 padx=self.S(9), pady=self.S(7), spacing3=self.S(2),
@@ -947,20 +959,28 @@ class App:
         self._refresh_component_status()
 
     def copy_diagnostics(self):
+        self._copy_feedback(self.diagnostics.report(), self.copy_diagnostics_button, "复制诊断")
+
+    def copy_translation_feedback(self):
+        self._copy_feedback(self.diagnostics.translation_feedback(), self.copy_translation_button, "复制漏翻反馈")
+
+    def _copy_feedback(self, text, button, label):
         try:
             self.root.clipboard_clear()
-            self.root.clipboard_append(self.diagnostics.report())
+            self.root.clipboard_append(text)
         except tk.TclError:
             messagebox.showwarning(APP_NAME, "暂时无法复制，请稍后重试。", parent=self.root)
             return
-        if self.copy_diagnostics_timer is not None:
-            self.root.after_cancel(self.copy_diagnostics_timer)
-        self.copy_diagnostics_button.configure(text="已复制")
-        self.copy_diagnostics_timer = self.root.after(1800, self._reset_copy_diagnostics)
+        timer = self.copy_feedback_timers.get(button)
+        if timer is not None:
+            self.root.after_cancel(timer)
+        button.configure(text="已复制")
 
-    def _reset_copy_diagnostics(self):
-        self.copy_diagnostics_button.configure(text="复制诊断")
-        self.copy_diagnostics_timer = None
+        def reset():
+            self.copy_feedback_timers.pop(button, None)
+            button.configure(text=label)
+
+        self.copy_feedback_timers[button] = self.root.after(1800, reset)
 
     def _open_info(self, title):
         existing = self.dialogs.get(title)
@@ -1177,6 +1197,7 @@ class App:
         self.btn_folder.set_enabled(ready)
         self.btn_detect.set_enabled(ready)
         self.btn_csv.set_enabled(ready)
+        self.btn_default_csv.set_enabled(ready and (self.saved_translation or self.translations != self.default_translations))
         self.btn_open.set_enabled(ready and self.has_backups)
         if self.extras is not None:
             self.extras.sync_actions()
@@ -1361,12 +1382,53 @@ class App:
         elif not payload.get("silent"):
             self.status.configure(text="就绪")
 
+    def _load_translation_preference(self):
+        try:
+            path = Path(self.translation_preference.read_text(encoding="utf-8"))
+            self.saved_translation = True
+            if path.is_absolute() and path.suffix.lower() in {".csv", ".r3ezh"} and path.is_file():
+                self.translations = path
+                return
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            self.saved_translation = True
+        self.log("上次选择的译文表无法读取，本次使用默认译文。")
+
     def choose_csv(self):
-        path = filedialog.askopenfilename(title="选择翻译文件",
-                                          filetypes=[("译文包或自定义 CSV", ("*.r3ezh", "*.csv"))])
-        if path:
-            self.translations = Path(path)
-            self.csv_var.set(Path(path).name)
+        selected = filedialog.askopenfilename(title="选择翻译文件",
+                                              filetypes=[("译文包或自定义 CSV", ("*.r3ezh", "*.csv"))])
+        if not selected:
+            return
+        path = Path(selected).absolute()
+        try:
+            available = path.suffix.lower() in {".csv", ".r3ezh"} and path.is_file()
+        except OSError:
+            available = False
+        if not available:
+            messagebox.showwarning(APP_NAME, "请选择可读取的 CSV 或 R3EZH 译文表。", parent=self.root)
+            return
+        self.translations = path
+        self.csv_var.set(path.name)
+        try:
+            self.translation_preference.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(self.translation_preference, str(path).encode("utf-8"))
+        except (OSError, UnicodeError):
+            messagebox.showwarning(APP_NAME, "本次已选择该译文表，但无法保存，下次打开时可能需要重新选择。", parent=self.root)
+        else:
+            self.saved_translation = True
+        self._sync_actions()
+
+    def restore_default_translations(self):
+        try:
+            self.translation_preference.unlink(missing_ok=True)
+        except OSError:
+            messagebox.showwarning(APP_NAME, "无法清除已保存的选择，请稍后重试。", parent=self.root)
+            return
+        self.saved_translation = False
+        self.translations = self.default_translations
+        self.csv_var.set(self.translations.name)
+        self._sync_actions()
 
     def open_backups(self):
         if not self.installer:
@@ -1548,11 +1610,11 @@ def main() -> None:
     root.deiconify()
     if selftest:
         buttons = [app.btn_check, app.help_button, app.sponsor_button, app.about_button,
-                   app.copy_diagnostics_button]
+                   app.copy_diagnostics_button, app.copy_translation_button]
         from extra_ui import probe
 
         if getattr(sys, "frozen", False):
-            parse_pack(app.translations.read_bytes())
+            parse_pack(app.default_translations.read_bytes())
         probe()
         buttons.extend((app.extras.start_game, app.extras.restore_game))
         root.update()

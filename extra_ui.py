@@ -103,21 +103,19 @@ class ExtraControls:
 
         self.menu_active = self.preparing = True
         self.cancel_menu.clear()
+        self.app.diagnostics.set_menu_pages(())
         self.app._start('正在检查游戏…')
         self.menu_status.configure(text='正在检查游戏…')
         self._start_launch(game, self.app.installer, translations, include_text=True)
 
-    def _start_launch(self, game, installer, translations, *, include_text):
-        threading.Thread(target=self._launch, args=(game, installer, translations, include_text),
+    def _start_launch(self, game, installer, translations, *, include_text, include_menu=True):
+        threading.Thread(target=self._launch, args=(game, installer, translations, include_text, include_menu),
                          daemon=True).start()
 
-    def _launch(self, game, installer, translations, include_text):
+    def _launch(self, game, installer, translations, include_text, include_menu=True):
         stage = Stage.START
         try:
             steam = self._steam_for_game(game)
-            stage = Stage.MENU
-            script = home_zh.load_translation()
-            stage = Stage.START
             event = home_zh.WatchEvent()
             with event.own() as handle:
                 def stopped(milliseconds):
@@ -125,6 +123,15 @@ class ExtraControls:
 
                 if stopped(0):
                     raise RuntimeError('启动已取消。')
+                if include_menu:
+                    stage = Stage.MENU
+                    try:
+                        home_zh.game_listens_locally()
+                    except home_zh.MenuPortInUse as exc:
+                        self.post(self._offer_launch_without_menu, game, installer, translations, include_text, str(exc))
+                        return
+                    script = home_zh.load_translation()
+                stage = Stage.START
                 self.app.record_localized_game(game)
                 if include_text:
                     stage = Stage.BASE
@@ -142,15 +149,19 @@ class ExtraControls:
                 self.post(self.app.set_component_status, Stage.HUD, Status.READY)
                 stage = Stage.STEAM
                 self.post(self._show_stage, '正在通过 Steam 启动 RaceRoom…', 80)
-                self._start_steam(steam, stopped)
+                self._start_steam(steam, stopped, include_menu=include_menu)
+                if not include_menu:
+                    self.post(self._finish_without_menu)
+                    return
                 stage = Stage.MENU
                 self.post(self.app.set_component_status, Stage.MENU, Status.WAITING)
                 self.post(self._show_stage, '赛中 HUD 已就绪，正在等待网页菜单…', 90)
                 home_zh.apply_pages(websocket, script, 120, stopped, True,
-                                    report=lambda text: self._report_menu(text, include_text))
+                                    report=lambda text: self._report_menu(text, include_text),
+                                    on_pages=lambda pages: self.post(self.app.diagnostics.set_menu_pages, pages))
         except Exception as exc:
             if stage == Stage.BASE:
-                self.post(self._offer_menu_hud_only, game, str(exc))
+                self.post(self._offer_menu_hud_only, game, str(exc), include_menu)
                 return
             self.post(self._menu_finished, stage, str(exc))
         else:
@@ -175,12 +186,15 @@ class ExtraControls:
             raise RuntimeError('启动已取消。')
         self.app.log(hud_bundle.prepare_launch(game, running=False))
 
-    def _start_steam(self, steam, stopped):
+    def _start_steam(self, steam, stopped, *, include_menu=True):
         if stopped(0):
             raise RuntimeError('启动已取消。')
         if self.game_running():
             raise RuntimeError('RaceRoom 已在准备期间启动。请退出游戏后重试。')
-        subprocess.Popen([str(steam), '-applaunch', '211500', '-webdev'], cwd=steam.parent)
+        args = [str(steam), '-applaunch', '211500']
+        if include_menu:
+            args.append('-webdev')
+        subprocess.Popen(args, cwd=steam.parent)
 
     def _basic_ready(self, result):
         applied = result['applied']
@@ -193,19 +207,43 @@ class ExtraControls:
             summary = f'已更新 {applied:,} 条基础文本' if applied else '基础文本与译文表一致'
         self.app.basic_summary.configure(text=summary)
 
-    def _offer_menu_hud_only(self, game, error):
+    def _offer_menu_hud_only(self, game, error, include_menu=True):
         self.app.set_component_status(Stage.BASE, Status.FAILED)
         notice = self.app.report_issue(Stage.BASE, error)
         self.app.basic_state.configure(text='未完成')
         self._show_stage(notice)
+        components = '菜单与 HUD' if include_menu else '赛中 HUD'
         if messagebox.askyesno('基础文本未完成',
-                               f'{notice}\n\n详细原因：{error}\n\n是否保留当前基础文本，仅启用菜单与 HUD 并启动？',
+                               f'{notice}\n\n详细原因：{error}\n\n是否保留当前基础文本，仅启用{components}并启动？',
                                default=messagebox.NO, parent=self.app.root):
-            self._start_launch(game, None, None, include_text=False)
+            self._start_launch(game, None, None, include_text=False, include_menu=include_menu)
         else:
             self.menu_active = self.preparing = False
             self.app._set_busy(False)
             self._show_stage(notice, 0)
+
+    def _offer_launch_without_menu(self, game, installer, translations, include_text, error):
+        if self.stopping or self.cancel_menu.is_set():
+            return
+        self.app.set_component_status(Stage.MENU, Status.DISCONNECTED)
+        notice = self.app.report_issue(Stage.MENU, error)
+        self._show_stage(notice)
+        components = '基础文本和赛中 HUD' if include_text else '赛中 HUD'
+        if messagebox.askyesno('网页菜单端口被占用',
+                               f'{notice}\n\n本次是否跳过网页菜单，只启用{components}并启动？',
+                               default=messagebox.NO, parent=self.app.root):
+            self.app.set_component_status(Stage.MENU, Status.SKIPPED)
+            self._start_launch(game, installer, translations, include_text=include_text, include_menu=False)
+        else:
+            self.menu_active = self.preparing = False
+            self.app._set_busy(False)
+            self._show_stage(notice, 0)
+
+    def _finish_without_menu(self):
+        self.menu_active = self.preparing = False
+        message = '已请 Steam 启动 RaceRoom，本次跳过网页菜单汉化。'
+        self._show_stage(message)
+        self.app._finish(message)
 
     def _report_menu(self, text, include_text):
         self.app.log(text)

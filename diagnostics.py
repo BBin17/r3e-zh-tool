@@ -23,6 +23,7 @@ class Status(StrEnum):
     INACTIVE = "未启用"
     PREPARING = "处理中"
     WAITING = "等待连接"
+    SKIPPED = "本次跳过"
     APPLIED = "已汉化"
     ENABLED = "已启用"
     READY = "已就绪"
@@ -65,7 +66,8 @@ class Issue:
 
 
 def issue_for(stage: Stage, details: str) -> Issue:
-    # Exception text is used for classification only. It may contain personal paths.
+    # Only copy recognized fields from exception text, which can contain personal paths.
+    port = re.fullmatch(r"网页菜单端口 8080 被占用（([^（）]+)）", details)
     if "RaceRoom" in details and any(term in details for term in ("先退出", "先完全退出", "正在运行", "已在准备期间启动")):
         summary = "RaceRoom 仍在运行"
         action = RESTART_GAME if stage != Stage.RESTORE else "完全退出 RaceRoom，再点「恢复原版」。"
@@ -91,6 +93,17 @@ def issue_for(stage: Stage, details: str) -> Issue:
         summary, action = "当前游戏版本的 HUD 需要适配", SEND_DIAGNOSTICS
     elif stage == Stage.HUD and ("备份" in details or "恢复原版" in details):
         summary, action = "HUD 文件或备份需要核对", "退出 RaceRoom，点「恢复原版」并查看结果，再尝试启动。"
+    elif stage in (Stage.START, Stage.MENU) and port:
+        names = [name for name in port[1].split("、")[:5]
+                 if re.fullmatch(r"[\w .()\-]{1,64}\.exe|未知进程", name, re.IGNORECASE)]
+        summary = f"网页菜单端口 8080 被占用（{'、'.join(names)}）" if names else "网页菜单端口 8080 被占用"
+        action = "关闭占用该端口的程序或停用它的调试功能，再重试网页菜单汉化。"
+    elif stage == Stage.MENU and details == "RaceRoom 在网页菜单就绪前已退出。":
+        summary, action = "RaceRoom 在网页菜单就绪前已退出", "先在 Steam 中确认游戏能进入主菜单，再从工具启动。"
+    elif stage == Stage.MENU and details == "等待 Steam 启动 RaceRoom 超时，未检测到游戏进程。":
+        summary, action = "等待 Steam 启动 RaceRoom 超时", "检查 Steam 是否在等待启动确认，再重试。"
+    elif stage == Stage.MENU and details.startswith("未找到可汉化的游戏页面。"):
+        summary, action = "RaceRoom 已启动，网页菜单尚未连接", "等游戏进入主菜单。仍未连接时，" + SEND_DIAGNOSTICS
     elif stage in (Stage.START, Stage.MENU) and ("调试端口" in details or "游戏汉化已经在运行" in details):
         summary, action = "网页菜单连接被占用或不可用", "退出 RaceRoom 和其他汉化工具窗口，再点「一键汉化并启动」。"
     elif stage == Stage.MENU and ("菜单译文脚本无效" in details or "home-zh.js" in details):
@@ -110,6 +123,18 @@ def numeric_text(value, pattern: str) -> str:
     return value if isinstance(value, str) and re.fullmatch(pattern, value) else "未读取"
 
 
+def safe_menu_route(path: str) -> str:
+    # Page discovery provides a pathname. Only report route names; hide account and other identifiers.
+    if not path.startswith("/") or path.startswith("//"):
+        return "未识别页面"
+    parts = path.split("/")[1:7]
+    for i, part in enumerate(parts):
+        private = i > 0 and parts[i - 1].lower() in {"users", "user", "players", "player", "accounts", "account"}
+        if private or not re.fullmatch(r"[A-Za-z][A-Za-z_-]{0,31}", part):
+            parts[i] = "[已隐藏]"
+    return "/" + "/".join(parts)
+
+
 class Diagnostics:
     def __init__(self, version: str, local_build: bool = False):
         self.version = numeric_text(version, r"[0-9]+(?:\.[0-9]+){1,3}")
@@ -122,6 +147,11 @@ class Diagnostics:
             Stage.HUD: Status.UNKNOWN,
         }
         self.issues: deque[Issue] = deque(maxlen=3)
+        self.menu_pages: tuple[tuple[str, bool], ...] = ()
+
+    def set_menu_pages(self, pages):
+        self.menu_pages = tuple(dict.fromkeys((safe_menu_route(path), supported)
+                                              for path, supported in pages))[:5]
 
     def set_game_versions(self, build, exe):
         self.steam_build = numeric_text(build, r"[0-9]{1,15}")
@@ -148,4 +178,17 @@ class Diagnostics:
             lines.extend(f"- {issue.stage}｜{issue.summary}。{issue.action}" for issue in reversed(self.issues))
         else:
             lines.append("暂无记录")
+        return "\n".join(lines)
+
+    def translation_feedback(self) -> str:
+        edition = "（本地测试）" if self.local_build else ""
+        lines = ["R3E 网页菜单漏翻反馈", f"工具版本：v{self.version}{edition}",
+                 f"Steam Build ID：{self.steam_build}", f"游戏程序版本：{self.game_version}",
+                 f"网页菜单：{self.states[Stage.MENU]}", "最近检测到的游戏页面："]
+        if self.menu_pages:
+            lines.extend(f"- {path}（{'已列入适配' if supported else '尚未适配'}）"
+                         for path, supported in self.menu_pages)
+        else:
+            lines.append("未检测到。请补充页面位置或截图。")
+        lines.append("漏翻文字或操作步骤：")
         return "\n".join(lines)

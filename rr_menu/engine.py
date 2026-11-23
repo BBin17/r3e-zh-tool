@@ -5,6 +5,7 @@ import ctypes
 from ctypes import wintypes
 import io
 import json
+import locale
 from pathlib import Path
 import re
 import subprocess
@@ -41,6 +42,21 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class MenuPortInUse(RuntimeError):
+    pass
+
+
+def windows_processes(image=None):
+    args = ['tasklist', '/fo', 'csv', '/nh']
+    if image:
+        args += ['/fi', f'IMAGENAME eq {image}']
+    listing = subprocess.check_output(args, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+    rows = csv.reader(io.StringIO(listing.decode(locale.getpreferredencoding(False), errors='replace')))
+    return {row[1]: row[0] for row in rows
+            if len(row) >= 2 and row[1].isascii() and row[1].isdigit()
+            and (not image or row[0].casefold() == image.casefold())}
+
+
 def game_listens_locally():
     listing = subprocess.check_output(['netstat', '-ano', '-p', 'tcp'], timeout=10,
                                       creationflags=subprocess.CREATE_NO_WINDOW).decode(errors='replace')
@@ -48,14 +64,15 @@ def game_listens_locally():
                  and row[1].endswith(f':{PORT}') and row[3] == 'LISTENING']
     if not listeners:
         return False
+    processes = windows_processes()
+    owners = {processes.get(row[-1], '') for row in listeners}
+    other_owners = {name for name in owners if name.lower() != 'rrre64.exe'}
+    if other_owners:
+        names = sorted({name if re.fullmatch(r'[\w .()\-]{1,64}\.exe', name, re.IGNORECASE) else '未知进程'
+                        for name in other_owners}, key=str.lower)
+        raise MenuPortInUse(f'网页菜单端口 {PORT} 被占用（{"、".join(names[:5])}）')
     if any(row[1] not in {f'127.0.0.1:{PORT}', f'[::1]:{PORT}'} for row in listeners):
         raise RuntimeError('调试端口监听的地址超出本机回环范围，已停止。')
-    processes = subprocess.check_output(['tasklist', '/fi', 'IMAGENAME eq RRRE64.exe', '/fo', 'csv', '/nh'],
-                                        timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-    game_pids = {row[1] for row in csv.reader(io.StringIO(processes.decode(errors='replace')))
-                 if len(row) >= 2 and row[0].lower() == 'rrre64.exe'}
-    if any(row[-1] not in game_pids for row in listeners):
-        raise RuntimeError('调试端口未由 RaceRoom 游戏进程占用，已停止。')
     return any(row[1] == f'127.0.0.1:{PORT}' for row in listeners)
 
 
@@ -225,12 +242,15 @@ def restore_pages(websocket):
     return restored
 
 
-def apply_pages(websocket, script, wait_seconds, should_stop, watch, *, report=print):
+def apply_pages(websocket, script, wait_seconds, should_stop, watch, *, report=print, on_pages=None):
     chart_script = load_translation(charts=True)
     deadline = time.monotonic() + wait_seconds
     installed = {}
     reported = {}
     applied = False
+    game_seen = False
+    missing_since = None
+    last_paths = ()
     while not should_stop(0):
         try:
             targets = find_pages()
@@ -238,6 +258,27 @@ def apply_pages(websocket, script, wait_seconds, should_stop, watch, *, report=p
             targets = []  # The debugger can disappear between netstat and discovery.
         if targets is None and applied:
             return
+        if not applied:
+            # Steam may take a while to create the process, or briefly restart it.
+            game_running = bool(targets) or bool(windows_processes('RRRE64.exe'))
+            now = time.monotonic()
+            if game_running:
+                game_seen = True
+                missing_since = None
+            elif game_seen:
+                if missing_since is None:
+                    missing_since = now
+                elif now - missing_since >= 3:
+                    raise RuntimeError('RaceRoom 在网页菜单就绪前已退出。')
+            if now >= deadline and not game_running:
+                if game_seen:
+                    raise RuntimeError('RaceRoom 在网页菜单就绪前已退出。')
+                raise RuntimeError('等待 Steam 启动 RaceRoom 超时，未检测到游戏进程。')
+        paths = tuple(dict.fromkeys(path for path, _ in targets or ()))
+        if paths and paths != last_paths:
+            last_paths = paths
+            if on_pages is not None:
+                on_pages(tuple((path, supports_translation(path)) for path in paths))
         endpoints = {endpoint for _, endpoint in targets or ()}
         installed = {endpoint: key for endpoint, key in installed.items() if endpoint in endpoints}
         reported = {endpoint: error for endpoint, error in reported.items() if endpoint in endpoints}

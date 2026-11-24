@@ -17,7 +17,12 @@ from . import recipe
 
 BACKUP_DIR = 'zh-hud-backups'
 CUSTOM_FONT = f'{recipe.FONT_NAME}.ttf'
-HUD_VERSION = 2
+HUD_VERSION = 3
+_RECEIPT_PANELS = {
+    1: recipe.LEGACY_PANELS,
+    2: recipe.PANELS.keys() - {'message_log'},
+    HUD_VERSION: recipe.PANELS.keys(),
+}
 CLOSE_GAME = '请先退出 RaceRoom，再操作 HUD 汉化。'
 
 
@@ -115,10 +120,10 @@ def _receipt(hud, backups):
     if Path(receipt['hud']) != hud:
         raise ValueError('HUD 备份记录与所选游戏目录不匹配。')
     version = receipt.get('hud_version', 1)
-    if type(version) is not int or version not in (1, HUD_VERSION):
+    if type(version) is not int or version not in _RECEIPT_PANELS:
         raise ValueError('此 HUD 备份需要兼容的汉化工具版本。')
     panels = receipt.get('panels')
-    if (not isinstance(panels, dict) or panels.keys() not in (recipe.LEGACY_PANELS, recipe.PANELS.keys())
+    if (not isinstance(panels, dict) or panels.keys() != _RECEIPT_PANELS[version]
             or not _valid_hash(receipt.get('font'))
             or any(not isinstance(hashes, dict) or not _valid_hash(hashes.get('original'))
                    or not _valid_hash(hashes.get('localized')) or hashes['original'] == hashes['localized']
@@ -146,8 +151,8 @@ def _verify(hud, backups, receipt):
     return complete
 
 
-def _check_unbacked(hud):
-    for name in recipe.PANELS:
+def _check_unbacked(hud, names):
+    for name in names:
         if _font(hud, name).exists():
             raise ValueError('检测到没有本地备份的 HUD 汉化，请先用原先的汉化工具恢复 HUD。')
         source = _manifest(hud, name).read_bytes()
@@ -171,7 +176,7 @@ def status(game_dir: Path) -> tuple[str, bool, bool]:
                 if _verify(hud, backups, receipt):
                     return 'HUD 汉化已安装，可恢复原版。', False, True
                 return 'HUD 操作尚未完成，可恢复原版。', False, True
-            _check_unbacked(hud)
+            _check_unbacked(hud, recipe.PANELS)
             if not recipe.font_available():
                 return '缺少可用于 HUD 的 Windows 简体中文字体。', False, False
             return 'HUD 尚未安装汉化，可安装。', True, False
@@ -247,7 +252,7 @@ def _require_installed(hud: Path, backups: Path):
     if not backups.exists():
         raise ValueError('HUD 尚未安装汉化。请先退出 RaceRoom，再启动中文游戏。')
     receipt = _receipt(hud, backups)
-    if not _verify(hud, backups, receipt) or receipt['panels'].keys() != recipe.PANELS.keys():
+    if not _verify(hud, backups, receipt):
         raise ValueError('HUD 汉化不完整，请先恢复原版，再启动中文游戏。')
     return receipt
 
@@ -259,7 +264,7 @@ def prepare_launch(game_dir: Path, *, running: bool) -> str:
         with _locked(backups):
             receipt = _require_installed(hud, backups)
             if receipt.get('hud_version', 1) != HUD_VERSION:
-                raise RuntimeError('赛中 HUD 有新版译文。请退出 RaceRoom，再点「启动中文游戏」更新。')
+                raise RuntimeError('赛中 HUD 有新版译文。请退出 RaceRoom，再点「一键汉化并启动」更新。')
         return '赛中 HUD 汉化已就绪。'
     return install(game_dir, reuse_existing=True)
 
@@ -276,8 +281,8 @@ def install(game_dir: Path, *, reuse_existing: bool = False) -> str:
             previous = _require_installed(hud, backups)
             if previous.get('hud_version', 1) == HUD_VERSION:
                 return '赛中 HUD 汉化已就绪。'
-        else:
-            _check_unbacked(hud)
+        previous_panels = previous['panels'] if previous is not None else {}
+        _check_unbacked(hud, recipe.PANELS.keys() - previous_panels.keys())
         if not recipe.font_available():
             raise ValueError('缺少可用于 HUD 的 Windows 简体中文字体。')
 
@@ -293,10 +298,10 @@ def install(game_dir: Path, *, reuse_existing: bool = False) -> str:
             paths = {}
             for name in recipe.PANELS:
                 paths[name] = originals / f'{name}.json'
-                if previous is None:
-                    _replace(_manifest(hud, name).read_bytes(), paths[name], None)
+                if name in previous_panels:
+                    _copy_verified(backups / f'{name}.json', paths[name], previous_panels[name]['original'])
                 else:
-                    _copy_verified(backups / f'{name}.json', paths[name], previous['panels'][name]['original'])
+                    _replace(_manifest(hud, name).read_bytes(), paths[name], None)
             hashes = recipe.prepare(stage, paths, labels=labels)
             font = stage / CUSTOM_FONT
             receipt = {'hud': str(hud), 'hud_version': HUD_VERSION, 'panels': hashes, 'font': recipe.digest(font)}
@@ -334,7 +339,7 @@ def restore(game_dir: Path) -> str:
     with _locked(backups):
         _require_closed()
         if not backups.exists():
-            _check_unbacked(hud)
+            _check_unbacked(hud, recipe.PANELS)
             return '赛中 HUD 已是原版。'
         _restore(hud, backups)
     return '赛中 HUD 已恢复为原版。'

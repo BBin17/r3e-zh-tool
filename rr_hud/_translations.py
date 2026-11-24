@@ -239,6 +239,7 @@ PANELS = {
             'd8509e57859f8772176ab793809b5cdecf2df6643256ce62727072531c7d820f': '预计进站耗时',
         },
     },
+    'message_log': {f'msg{i}Text': {} for i in range(8)},
     'standings': {
         'sessionLabel': {
             'dc120be59da2cc6199caebaf2305fd5c5925bedf7dc1fb499e1c5ae55775c07e': '排行榜',

@@ -67,6 +67,54 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(self.installer.install(pack)["applied"], 2)
             self.assertTrue(self.installer.install(pack)["cached"])
 
+    def test_hud_upgrade_preserves_original_messages_for_restore(self):
+        from rr_hud import bundle, recipe
+
+        hud = self.path.parent.parent / "Cosmo" / "hud"
+        backups = self.path.parent / bundle.BACKUP_DIR
+        backups.mkdir()
+        originals = {name: f"original {name}".encode() for name in recipe.PANELS}
+        old_receipt = {"hud": str(hud.resolve()), "hud_version": 2,
+                       "panels": {}, "font": bundle._hash(b"old font")}
+        for name, original in originals.items():
+            panel = hud / name
+            (panel / "fonts").mkdir(parents=True)
+            if name == "message_log":
+                (panel / "manifest.json").write_bytes(original)
+                continue
+            localized = f"old {name}".encode()
+            (panel / "manifest.json").write_bytes(localized)
+            (panel / "fonts" / bundle.CUSTOM_FONT).write_bytes(b"old font")
+            (backups / f"{name}.json").write_bytes(original)
+            old_receipt["panels"][name] = {"original": bundle._hash(original),
+                                           "localized": bundle._hash(localized)}
+        (backups / recipe.RECEIPT).write_text(json.dumps(old_receipt), encoding="utf-8")
+
+        def prepare(stage, paths, *, labels):
+            self.assertEqual({name: path.read_bytes() for name, path in paths.items()}, originals)
+            (stage / bundle.CUSTOM_FONT).write_bytes(b"new font")
+            checksums = {}
+            for name, original in originals.items():
+                localized = f"new {name}".encode()
+                (stage / f"{name}.json").write_bytes(localized)
+                checksums[name] = {"original": bundle._hash(original), "localized": bundle._hash(localized)}
+            return checksums
+
+        with patch.object(recipe, "game_running", return_value=False), \
+             patch.object(recipe, "font_available", return_value=True), \
+             patch.object(recipe, "prepare", side_effect=prepare) as build, \
+             patch.object(recipe, "translate_panel", return_value={"fonts": {}}):
+            bundle.prepare_launch(self.root, running=False)
+            self.assertEqual(bundle._receipt(hud.resolve(), backups)["hud_version"], bundle.HUD_VERSION)
+            self.assertEqual((hud / "message_log" / "manifest.json").read_bytes(), b"new message_log")
+            bundle.prepare_launch(self.root, running=False)
+            build.assert_called_once()
+            bundle.restore(self.root)
+        self.assertFalse(backups.exists())
+        for name, original in originals.items():
+            self.assertEqual((hud / name / "manifest.json").read_bytes(), original)
+            self.assertFalse((hud / name / "fonts" / bundle.CUSTOM_FONT).exists())
+
     def test_uninstall_requires_verified_game_restore_and_allows_retry(self):
         from rr_hud import bundle, recipe
 

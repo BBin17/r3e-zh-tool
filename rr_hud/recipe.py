@@ -18,6 +18,15 @@ SYSTEM_FONT = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'Fonts' / 'msy
 FONT_NAME = 'r3eracezh'
 RECEIPT = 'receipt.json'
 LEGACY_PANELS = frozenset({'timing_panel', 'pit_limiter', 'status_strip'})
+# These short messages are supplied by the game at runtime, not by the HUD manifest.
+_MESSAGE_TEXT = (
+    '行车线 辅助线 开启关闭 理想 自己或挑战对象'
+    '手动变速箱 自动变速箱 幽灵车 历史最佳 本场最快'
+    '刹车偏置 牵引力控制 制动能量回收 发动机映射 FFB 倍率'
+    '反打方向辅助 车身稳定控制 原厂 ABS TC MGU预设 放电速率 剩余水量'
+    '所挑战的幽灵车下载失败 你的排行榜成绩上传失败 竞赛连接错误 更改语言失败！'
+    '：、％（）'
+)
 
 _MFD_SIGNALS = {
     'vehValue7': 'vehHeadlightsText',
@@ -136,6 +145,8 @@ def translate_panel(name: str, original: bytes, labels: Mapping[str, str] | None
             continue
         if element_id in found or element.get('type') != 'text' or 'value' not in element:
             raise ValueError(f'{name} 的 {element_id} 已变化。')
+        if name == 'message_log' and element['value'] != {'signal': f'{element_id[:-4]}_text'}:
+            raise ValueError(f'{name} 的 {element_id} 消息信号已变化。')
         translations = expected.get(element_id, {})
         seen = set()
         value = _translated_value(element['value'], translations, seen) if translations else element['value']
@@ -206,7 +217,7 @@ def _font_sources() -> tuple[Path, ...]:
 def _alphabet() -> str:
     return ''.join(map(chr, range(32, 127))) + ''.join(
         target for elements in PANELS.values() for labels in elements.values() for target in labels.values()
-    ) + ''.join(NATIVE_LABELS)
+    ) + ''.join(NATIVE_LABELS) + _MESSAGE_TEXT
 
 
 def _subset_font(source, alphabet, panels):
@@ -221,11 +232,13 @@ def _subset_font(source, alphabet, panels):
         missing = sorted(set(map(ord, alphabet)) - cmap.keys())
         if missing:
             raise ValueError('字体缺少字符：' + ''.join(map(chr, missing)))
-        latin = {code for code in cmap if 0xA0 <= code <= 0x24F}
+        # Keep common non-Chinese characters used by the message log.
+        additional = {code for code in cmap
+                      if 0xA0 <= code <= 0x52F or 0x1E00 <= code <= 0x20CF}
         options = Options()
         options.hinting = False
         subset = Subsetter(options=options)
-        subset.populate(text=alphabet, unicodes=latin)
+        subset.populate(text=alphabet, unicodes=additional)
         subset.subset(font)
         font.save(output)
 

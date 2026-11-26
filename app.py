@@ -1526,7 +1526,7 @@ class App:
                     notes.insert("end", re.sub(r"^(\s*)[-*+]\s+", r"\1• ", line) + "\n")
             notes.configure(state="disabled")
         else:
-            self._label(body, "此版本未填写更新说明。", color=MUTED).pack(anchor="w")
+            self._label(body, "可在 GitHub 发布页查看更新说明。", color=MUTED).pack(anchor="w")
         self._button(body, "在 GitHub 查看发布页",
                      lambda: webbrowser.open_new_tab(info["url"])).pack(anchor="w", pady=(self.S(5), 0))
         action = None if self.local_build else ("下载更新", self.do_update)

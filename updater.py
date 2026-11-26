@@ -1,4 +1,4 @@
-"""检查 GitHub Releases 上的新版本，下载并替换当前程序。
+"""检查发布版本，下载并替换当前程序。
 
 每个版本发布程序、安装包及带 Ed25519 签名的 SHA256 清单。
 译文包随程序一起更新。
@@ -7,6 +7,7 @@ Release 的标签名形如 v0.3，版本号取其中的数字。
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -20,7 +21,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from translation_pack import MANIFEST_DOMAIN, verify_signature
+from translation_pack import MANIFEST_DOMAIN, bundled_path, verify_signature
 
 # 更新查询指向公开发布仓库，供用户直接读取 Releases。
 GITHUB_REPO = "BBin17/r3e-zh-tool"
@@ -33,6 +34,10 @@ LEGACY_CSV_CONTENT = b"key,zh\n"
 LEGACY_EXE_DOWNLOAD = "R3E-ZH-Tool.new.exe"
 LEGACY_CSV_DOWNLOAD = "zh-translations.new.csv"
 API_URL = "https://api.github.com/repos/{repo}/releases/latest"
+MIRROR_API = "https://gitee.com/api/v5/repos/{repo}/releases"
+MIRROR_CONFIG = "update-mirror.txt"
+REPO_SLUG = r"[a-zA-Z0-9_-]+/[a-zA-Z0-9_][a-zA-Z0-9_.-]*"
+RELEASE_TAG = r"v[0-9]+(?:\.[0-9]+){1,3}"
 USER_AGENT = "R3E-ZH-Tool-updater"
 
 
@@ -54,7 +59,6 @@ def is_newer(remote: str, local: str) -> bool:
 def _request(url: str, timeout: float):
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
-        "Accept": "application/vnd.github+json",
     })
     return urllib.request.urlopen(req, timeout=timeout)
 
@@ -66,29 +70,66 @@ def _read_small(url: str) -> bytes:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise UpdateError("仓库里还没有发布版本。") from exc
-        raise UpdateError(f"GitHub 返回错误 {exc.code}。") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise UpdateError(f"无法连接 GitHub：{getattr(exc, 'reason', exc)}") from exc
+        raise UpdateError(f"更新服务返回错误 {exc.code}。") from exc
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise UpdateError("无法读取更新信息，请稍后重试。") from exc
+
+
+def _mirror_repo() -> str:
+    try:
+        repo = bundled_path(MIRROR_CONFIG).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return ""
+    return repo if re.fullmatch(REPO_SLUG, repo) else ""
+
+
+def _read_release(url: str) -> dict:
+    try:
+        data = json.loads(_read_small(url))
+    except ValueError as exc:
+        raise UpdateError("更新服务返回的版本信息无效。") from exc
+    if not isinstance(data, dict):
+        raise UpdateError("更新服务返回的版本信息无效。")
+    tag = data.get("tag_name")
+    assets = data.get("assets")
+    if not isinstance(tag, str) or not re.fullmatch(RELEASE_TAG, tag) or not isinstance(assets, list):
+        raise UpdateError("更新服务返回的版本信息无效。")
+    downloads = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name, download_url = asset.get("name"), asset.get("browser_download_url")
+        if isinstance(name, str) and isinstance(download_url, str) and download_url.startswith("https://"):
+            downloads[name] = download_url
+    body = data.get("body")
+    return {"tag": tag, "assets": downloads, "notes": body if isinstance(body, str) else ""}
 
 
 def check(local_version: str, repo: str = GITHUB_REPO) -> dict:
-    """返回 {"tag", "url", "newer", "assets", "notes"}。网络或仓库问题抛出 UpdateError。"""
-    if "/" not in repo or repo.upper().startswith("OWNER/"):
+    """Read GitHub first and use the bundled mirror if the request fails."""
+    if not re.fullmatch(REPO_SLUG, repo) or repo.upper().startswith("OWNER/"):
         raise UpdateError("尚未配置更新仓库（updater.py 里的 GITHUB_REPO）。")
-    data = json.loads(_read_small(API_URL.format(repo=repo)).decode("utf-8"))
-    tag = data.get("tag_name") or ""
-    assets = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
-    return {
-        "tag": tag,
-        "url": data.get("html_url") or f"https://github.com/{repo}/releases",
-        "newer": is_newer(tag, local_version),
-        "assets": assets,
-        "notes": data.get("body") or "",
-    }
+    try:
+        info = _read_release(API_URL.format(repo=repo))
+    except UpdateError as primary_error:
+        mirror = _mirror_repo()
+        if not mirror:
+            raise
+        try:
+            info = _read_release(f"{MIRROR_API.format(repo=mirror)}/latest")
+            if is_newer(info["tag"], local_version):
+                _release_checksum(info)
+        except UpdateError:
+            raise primary_error from None
+        info["notes"] = ""
+        info["_mirrored"] = True
+    tag = info["tag"]
+    return {**info, "url": f"https://github.com/{repo}/releases/tag/{tag}",
+            "newer": is_newer(tag, local_version)}
 
 
 def manifest_header(tag: str) -> str:
-    if not re.fullmatch(r"v[0-9]+(?:\.[0-9]+){1,3}", tag):
+    if not re.fullmatch(RELEASE_TAG, tag):
         raise ValueError("发布标签格式无效。")
     return f"# R3E release {tag}\n"
 
@@ -130,17 +171,17 @@ def _download_verified(url: str, name: str, expected: str, target: Path,
                 done += len(chunk)
                 if progress and total:
                     progress(done / total * 100)
-    except (urllib.error.URLError, OSError) as exc:
+    except (OSError, http.client.HTTPException, ValueError) as exc:
         target.unlink(missing_ok=True)
-        raise UpdateError(f"下载失败：{getattr(exc, 'reason', exc)}") from exc
+        raise UpdateError("更新下载中断，请稍后重试。") from exc
     if digest.hexdigest() != expected:
         target.unlink(missing_ok=True)
         raise UpdateError(f"{name} 校验失败，已删除，未做任何替换。")
     return target
 
 
-def download_update(info: dict, dest_dir: Path,
-                    progress: Callable[[float], None] | None = None) -> dict:
+def _download_release(info: dict, dest_dir: Path,
+                      progress: Callable[[float], None] | None) -> dict:
     """Verify the signed manifest before downloading any executable."""
     expected = _release_checksum(info)
     fd, filename = tempfile.mkstemp(prefix=".r3e-update-", suffix=".exe", dir=dest_dir)
@@ -152,6 +193,26 @@ def download_update(info: dict, dest_dir: Path,
         target.unlink(missing_ok=True)
         raise
     return {"exe": target, "sha256": expected}
+
+
+def download_update(info: dict, dest_dir: Path,
+                    progress: Callable[[float], None] | None = None) -> dict:
+    try:
+        return _download_release(info, dest_dir, progress)
+    except UpdateError as primary_error:
+        mirror = "" if info.get("_mirrored") else _mirror_repo()
+        if not mirror:
+            raise
+        tag = info["tag"]
+        try:
+            mirror_info = _read_release(f"{MIRROR_API.format(repo=mirror)}/tags/{tag}")
+            if mirror_info["tag"] != tag:
+                raise UpdateError("备用发布版本与所选版本不一致。")
+            if progress:
+                progress(0)
+            return _download_release(mirror_info, dest_dir, progress)
+        except UpdateError:
+            raise primary_error from None
 
 
 def apply_update(new_exe: Path, expected: str) -> None:

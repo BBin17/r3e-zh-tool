@@ -1,10 +1,12 @@
 import hashlib
 import io
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.error import URLError
 from pathlib import Path
 from unittest import mock
 
@@ -144,6 +146,102 @@ class DownloadUpdateTest(unittest.TestCase):
         self.exe_contents += b"unexpected bytes"
         with self.assertRaisesRegex(updater.UpdateError, "校验失败"):
             updater.download_update(self.info, self.root)
+        self.assertEqual(list(self.root.glob("*.exe")), [])
+
+
+class UpdateMirrorTest(unittest.TestCase):
+    def setUp(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.root = Path(workspace.name)
+        self.tag = "v0.3.34"
+        self.exe = b"signed release executable"
+        self.manifest = (updater.manifest_header(self.tag)
+                         + f"{hashlib.sha256(self.exe).hexdigest()}  {updater.EXE_NAME}\n").encode()
+        key = Ed25519PrivateKey.generate()
+        signature = key.sign(translation_pack.MANIFEST_DOMAIN + self.manifest)
+        (self.root / translation_pack.PUBLIC_KEY_NAME).write_bytes(key.public_key().public_bytes_raw())
+        self.mirror_repo = "test-account/test-mirror"
+        (self.root / updater.MIRROR_CONFIG).write_text(self.mirror_repo, encoding="ascii")
+        self.enterContext(mock.patch.object(updater, "bundled_path", side_effect=self.root.joinpath))
+        self.enterContext(mock.patch.object(translation_pack, "bundled_path", side_effect=self.root.joinpath))
+        self.github_api = updater.API_URL.format(repo=updater.GITHUB_REPO)
+        self.mirror_api = updater.MIRROR_API.format(repo=self.mirror_repo)
+        self.github_download = "https://github.com/test/"
+        self.mirror_download = "https://gitee.com/test/"
+        self.responses = {
+            self.github_api: self.release(self.github_download, self.tag),
+            f"{self.mirror_api}/latest": self.release(self.mirror_download, self.tag),
+            f"{self.mirror_api}/tags/{self.tag}": self.release(self.mirror_download, self.tag),
+        }
+        for prefix in (self.github_download, self.mirror_download):
+            self.responses.update({
+                prefix + updater.SUMS_NAME: self.manifest,
+                prefix + updater.SUMS_SIGNATURE_NAME: signature,
+                prefix + updater.EXE_NAME: self.exe,
+            })
+        self.request_mock = self.enterContext(mock.patch.object(updater, "_request", side_effect=self.request))
+
+    def release(self, prefix, tag):
+        return json.dumps({
+            "tag_name": tag,
+            "html_url": prefix,
+            "body": f"See {prefix} for details",
+            "assets": [{"name": name, "browser_download_url": prefix + name}
+                       for name in (updater.EXE_NAME, updater.SUMS_NAME, updater.SUMS_SIGNATURE_NAME)],
+        }).encode()
+
+    def request(self, url, timeout):
+        payload = self.responses[url]
+        if isinstance(payload, Exception):
+            raise payload
+        response = io.BytesIO(payload)
+        response.headers = {"Content-Length": str(len(payload))}
+        return response
+
+    def test_successful_primary_check_only_queries_github(self):
+        self.assertFalse(updater.check(self.tag)["newer"])
+        self.request_mock.assert_called_once_with(self.github_api, 15)
+
+    def test_primary_timeout_checks_and_downloads_from_mirror_with_github_link(self):
+        self.responses[self.github_api] = TimeoutError()
+        info = updater.check("0.3.33")
+        self.assertTrue(info["newer"])
+        self.assertEqual(info["url"], f"https://github.com/{updater.GITHUB_REPO}/releases/tag/{self.tag}")
+        self.assertEqual(info["notes"], "")
+        self.assertEqual(updater.download_update(info, self.root)["exe"].read_bytes(), self.exe)
+
+    def test_mirror_metadata_requires_valid_signature_before_announcing_update(self):
+        self.responses[self.github_api] = b"not JSON"
+        self.responses[self.mirror_download + updater.SUMS_SIGNATURE_NAME] = b"bad signature"
+        with self.assertRaisesRegex(updater.UpdateError, "版本信息无效"):
+            updater.check("0.3.33")
+        self.request_mock.assert_any_call(self.mirror_download + updater.SUMS_SIGNATURE_NAME, 15)
+
+    def test_github_download_failure_retries_the_same_tag(self):
+        self.responses[self.github_download + updater.EXE_NAME] = TimeoutError()
+        info = updater.check("0.3.33")
+        downloaded = updater.download_update(info, self.root)
+        self.assertEqual(downloaded["exe"].read_bytes(), self.exe)
+        self.request_mock.assert_any_call(f"{self.mirror_api}/tags/{self.tag}", 15)
+        self.assertEqual(list(self.root.glob("*.exe")), [downloaded["exe"]])
+
+    def test_mirror_cannot_substitute_a_different_tag(self):
+        self.responses[self.github_download + updater.EXE_NAME] = TimeoutError()
+        self.responses[f"{self.mirror_api}/tags/{self.tag}"] = self.release(self.mirror_download, "v0.3.33")
+        with self.assertRaisesRegex(updater.UpdateError, "下载中断"):
+            updater.download_update(updater.check("0.3.33"), self.root)
+        urls = [call.args[0] for call in self.request_mock.call_args_list]
+        self.assertNotIn(self.mirror_download + updater.EXE_NAME, urls)
+        self.assertEqual(list(self.root.glob("*.exe")), [])
+
+    def test_mirror_network_error_does_not_expose_address(self):
+        self.responses[self.github_api] = TimeoutError()
+        info = updater.check("0.3.33")
+        self.responses[self.mirror_download + updater.EXE_NAME] = URLError(self.mirror_download)
+        with self.assertRaises(updater.UpdateError) as error:
+            updater.download_update(info, self.root)
+        self.assertNotIn(self.mirror_download, str(error.exception))
         self.assertEqual(list(self.root.glob("*.exe")), [])
 
 

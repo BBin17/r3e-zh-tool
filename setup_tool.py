@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "R3E 汉化工具"
-APP_VERSION = "0.3.33"
+APP_VERSION = "0.3.34"
 DEVELOPER = "BBin17"
 EXE_NAME = "R3E-ZH-Tool.exe"
 SHORTCUT_NAME = "R3E 汉化工具.lnk"

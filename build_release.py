@@ -1,6 +1,7 @@
 """Build the Windows app and installer from a signed translation resource."""
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from setup_tool import LOCAL_BUILD_MARKER
 from translation_pack import PACK_NAME, PUBLIC_KEY_NAME, parse_pack
-from updater import EXE_NAME, SETUP_NAME
+from updater import EXE_NAME, MIRROR_CONFIG, REPO_SLUG, SETUP_NAME
 
 ROOT = Path(__file__).resolve().parent
 LOCAL_SETUP_NAME = "R3E-ZH-Tool-Local-Setup.exe"
@@ -72,9 +73,12 @@ def main() -> None:
     parser.add_argument("--resources", type=Path, default=ROOT / "release",
                         help="包含签名译文包与发布公钥的目录")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--mirror-repo", metavar="OWNER/REPO", help="打包时嵌入备用更新仓库")
     parser.add_argument("--local-test", "--local-extras", dest="local_extras", action="store_true",
                         help="构建使用独立安装目录、可手动检查更新的本地测试版")
     args = parser.parse_args()
+    if args.mirror_repo and not re.fullmatch(REPO_SLUG, args.mirror_repo):
+        parser.error("备用更新仓库应填写 OWNER/REPO，填写仓库地址中的两段名称。")
     if sys.platform != "win32":
         parser.error("请在 Windows 上使用 Python 构建。")
     output = (args.output or ROOT / "dist" / ("local-test" if args.local_extras else "release")).resolve()
@@ -89,6 +93,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="r3e-build-", dir=output.parent) as folder:
         stage = Path(folder)
         branding = []
+        mirror_resources = []
+        if args.mirror_repo:
+            config = stage / MIRROR_CONFIG
+            config.write_text(args.mirror_repo + "\n", encoding="ascii")
+            mirror_resources.append(config)
         setup_name = SETUP_NAME
         if args.local_extras:
             marker = stage / LOCAL_BUILD_MARKER
@@ -97,7 +106,7 @@ def main() -> None:
             setup_name = LOCAL_SETUP_NAME
         build_exe(ROOT / "app.py", EXE_NAME, stage,
                   [ROOT / "blowfish_tables.json", ROOT / "app.ico", ROOT / "app-icon-preview.png",
-                   pack, public_key, *branding], app_build_args())
+                   pack, public_key, *branding, *mirror_resources], app_build_args())
         verify_app_payload(stage / EXE_NAME)
         build_exe(ROOT / "setup_tool.py", setup_name, stage, [stage / EXE_NAME, ROOT / "app.ico", *branding])
         output.mkdir(parents=True, exist_ok=True)

@@ -1554,7 +1554,7 @@ class App:
         if not messagebox.askyesno(
                 APP_NAME, f"下载 {info['tag']} 并替换当前程序，完成后自动重新打开。\n继续吗？"):
             return
-        self._start(f"正在下载 {info['tag']} …")
+        self._start(f"正在测速并下载 {info['tag']} …")
         target_dir = Path(sys.executable).resolve().parent
 
         def work():

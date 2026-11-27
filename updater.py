@@ -6,6 +6,7 @@ Release 的标签名形如 v0.3，版本号取其中的数字。
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import http.client
 import json
@@ -39,6 +40,10 @@ MIRROR_CONFIG = "update-mirror.txt"
 REPO_SLUG = r"[a-zA-Z0-9_-]+/[a-zA-Z0-9_][a-zA-Z0-9_.-]*"
 RELEASE_TAG = r"v[0-9]+(?:\.[0-9]+){1,3}"
 USER_AGENT = "R3E-ZH-Tool-updater"
+PROBE_BYTES = 1024 * 1024
+PROBE_SECONDS = 3.0
+PROBE_TIMEOUT = 3.0
+MIRROR_SPEEDUP_RATIO = 1.10
 
 
 class UpdateError(RuntimeError):
@@ -180,10 +185,61 @@ def _download_verified(url: str, name: str, expected: str, target: Path,
     return target
 
 
+def _probe_source(url: str) -> float:
+    """Measure the start of one asset without keeping the response."""
+    started = time.monotonic()
+    received = 0
+    try:
+        with _request(url, PROBE_TIMEOUT) as resp:
+            while received < PROBE_BYTES:
+                chunk = resp.read(min(64 * 1024, PROBE_BYTES - received))
+                if not chunk:
+                    break
+                received += len(chunk)
+                if time.monotonic() - started >= PROBE_SECONDS:
+                    break
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise UpdateError("更新下载中断，请稍后重试。") from exc
+    if not received:
+        raise UpdateError("更新下载中断，请稍后重试。")
+    return received / max(time.monotonic() - started, 0.001)
+
+
+def _source_order(sources: list[dict]) -> list[dict]:
+    """Probe both sources together and order them by measured throughput."""
+    if len(sources) == 1:
+        return sources
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as pool:
+        pending = {
+            pool.submit(_probe_source, source["info"]["assets"][EXE_NAME]): source
+            for source in sources
+        }
+        for future, source in pending.items():
+            try:
+                results[source["kind"]] = future.result()
+            except UpdateError:
+                pass
+    github = next((source for source in sources if source["kind"] == "github"), None)
+    mirror = next((source for source in sources if source["kind"] == "mirror"), None)
+    if github is None or mirror is None:
+        return [source for source in sources if source["kind"] in results]
+    github_speed = results.get("github")
+    mirror_speed = results.get("mirror")
+    if github_speed is None and mirror_speed is None:
+        raise UpdateError("更新下载中断，请稍后重试。")
+    if github_speed is None:
+        return [mirror, github]
+    if mirror_speed is None or mirror_speed <= github_speed * MIRROR_SPEEDUP_RATIO:
+        return [github, mirror]
+    return [mirror, github]
+
+
 def _download_release(info: dict, dest_dir: Path,
-                      progress: Callable[[float], None] | None) -> dict:
+                      progress: Callable[[float], None] | None,
+                      expected: str | None = None) -> dict:
     """Verify the signed manifest before downloading any executable."""
-    expected = _release_checksum(info)
+    expected = expected or _release_checksum(info)
     fd, filename = tempfile.mkstemp(prefix=".r3e-update-", suffix=".exe", dir=dest_dir)
     os.close(fd)
     target = Path(filename)
@@ -197,22 +253,53 @@ def _download_release(info: dict, dest_dir: Path,
 
 def download_update(info: dict, dest_dir: Path,
                     progress: Callable[[float], None] | None = None) -> dict:
+    """Verify both releases, measure their assets, then use the faster source."""
+    primary_error = None
+    github = None
     try:
-        return _download_release(info, dest_dir, progress)
-    except UpdateError as primary_error:
-        mirror = "" if info.get("_mirrored") else _mirror_repo()
-        if not mirror:
-            raise
-        tag = info["tag"]
+        github = {"kind": "github", "info": info, "expected": _release_checksum(info)}
+    except UpdateError as exc:
+        primary_error = exc
+
+    mirror = None
+    mirror_repo = "" if info.get("_mirrored") else _mirror_repo()
+    if mirror_repo:
         try:
-            mirror_info = _read_release(f"{MIRROR_API.format(repo=mirror)}/tags/{tag}")
-            if mirror_info["tag"] != tag:
+            mirror_info = _read_release(f"{MIRROR_API.format(repo=mirror_repo)}/tags/{info['tag']}")
+            if mirror_info["tag"] != info["tag"]:
                 raise UpdateError("备用发布版本与所选版本不一致。")
-            if progress:
-                progress(0)
-            return _download_release(mirror_info, dest_dir, progress)
+            mirror_expected = _release_checksum(mirror_info)
+            if github is None or mirror_expected == github["expected"]:
+                mirror = {"kind": "mirror", "info": mirror_info, "expected": mirror_expected}
         except UpdateError:
-            raise primary_error from None
+            pass
+
+    sources = [source for source in (github, mirror) if source is not None]
+    if not sources:
+        if primary_error is not None:
+            raise primary_error
+        raise UpdateError("无法读取更新文件，请稍后重试。")
+
+    try:
+        ordered = _source_order(sources)
+    except UpdateError:
+        if len(sources) == 1:
+            ordered = sources
+        else:
+            raise
+    errors = []
+    for source in ordered:
+        if progress:
+            progress(0)
+        try:
+            return _download_release(source["info"], dest_dir, progress, source["expected"])
+        except UpdateError as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+    if primary_error is not None:
+        raise primary_error
+    raise UpdateError("更新下载中断，请稍后重试。")
 
 
 def apply_update(new_exe: Path, expected: str) -> None:

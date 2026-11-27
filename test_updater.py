@@ -244,6 +244,33 @@ class UpdateMirrorTest(unittest.TestCase):
         self.assertNotIn(self.mirror_download, str(error.exception))
         self.assertEqual(list(self.root.glob("*.exe")), [])
 
+    def test_source_order_uses_mirror_only_when_meaningfully_faster(self):
+        sources = [
+            {"kind": "github", "info": {"assets": {updater.EXE_NAME: "github"}}},
+            {"kind": "mirror", "info": {"assets": {updater.EXE_NAME: "mirror"}}},
+        ]
+        with mock.patch.object(updater, "_probe_source",
+                               side_effect=lambda url: 12 if url == "mirror" else 10):
+            self.assertEqual([item["kind"] for item in updater._source_order(sources)],
+                             ["mirror", "github"])
+        with mock.patch.object(updater, "_probe_source",
+                               side_effect=lambda url: 10.5 if url == "mirror" else 10):
+            self.assertEqual([item["kind"] for item in updater._source_order(sources)],
+                             ["github", "mirror"])
+
+    def test_source_order_uses_mirror_when_github_probe_fails(self):
+        sources = [
+            {"kind": "github", "info": {"assets": {updater.EXE_NAME: "github"}}},
+            {"kind": "mirror", "info": {"assets": {updater.EXE_NAME: "mirror"}}},
+        ]
+        def probe(url):
+            if url == "github":
+                raise updater.UpdateError("offline")
+            return 10
+        with mock.patch.object(updater, "_probe_source", side_effect=probe):
+            self.assertEqual([item["kind"] for item in updater._source_order(sources)],
+                             ["mirror", "github"])
+
 
 if __name__ == "__main__":
     unittest.main()

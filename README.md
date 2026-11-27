@@ -106,5 +106,3 @@ python release_signing.py --key /path/to/release-signing.pem manifest dist/relea
 从 v0.3.30 之后数五次公开正式发布，前五次都附兼容 CSV，第六次起省略。`manifest --official` 从 GitHub 核对已发布的正式版本。跳过的版本号、本地测试包、草稿和预览版都不计入。退役时在新版发布说明中提醒 v0.3.27 及以前的用户覆盖安装一次。
 
 公开仓库保留历次正式 Release。自动清理工作流已停用。恢复历史版本时保留原发布附件，不将历史版设为 Latest。
-
-旧仓库的源码历史和 Release 保存在[私有归档仓库](https://github.com/BBin17/r3e-zh-tool-archive)。
